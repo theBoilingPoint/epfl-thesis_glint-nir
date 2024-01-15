@@ -1,0 +1,63 @@
+<?xml version='1.0' encoding='utf-8'?>
+
+<scene>
+	<integrator type="path_final"/>
+
+	<sampler type="independent">
+		<integer name="sampleCount" value="64"/>
+	</sampler>
+
+	<camera type="perspective">
+		<float name="fov" value="35"/>
+		<transform name="toWorld">
+			<lookat target="0.0, 0.0, 0.0"
+                    origin="-1.05723763  2.5740304   2.91661024"
+                    up="0.0, 1.0, 0.0"/>
+		</transform>
+		<integer name="height" value="800"/>
+		<integer name="width" value="800"/>
+	</camera>
+
+	<mesh type="obj">
+		<string name="filename" value="meshes/sphere.obj"/>
+		<bsdf type="glints">
+			<float name="alpha" value="0.5"/>
+		</bsdf>
+	</mesh>
+	<mesh type="obj">
+		<string name="filename" value="meshes/light.obj"/>
+		<emitter type="area">
+			<color name="radiance" value="100 100 100"/>
+		</emitter>
+	</mesh>
+	<mesh type="obj">
+		<string name="filename" value="meshes/leftWall.obj"/>
+		<bsdf type="diffuse">
+			<color name="albedo" value="0.75,0.75,0.75"/>
+		</bsdf>
+	</mesh>
+	<mesh type="obj">
+		<string name="filename" value="meshes/rightWall.obj"/>
+		<bsdf type="diffuse">
+			<color name="albedo" value="0.75,0.75,0.75"/>
+		</bsdf>
+	</mesh>
+	<mesh type="obj">
+		<string name="filename" value="meshes/ceiling.obj"/>
+		<bsdf type="diffuse">
+			<color name="albedo" value="0.75,0.75,0.75"/>
+		</bsdf>
+	</mesh>
+	<mesh type="obj">
+		<string name="filename" value="meshes/floor.obj"/>
+		<bsdf type="diffuse">
+			<color name="albedo" value="0.75,0.75,0.75"/>
+		</bsdf>
+	</mesh>
+	<mesh type="obj">
+		<string name="filename" value="meshes/backWall.obj"/>
+		<bsdf type="diffuse">
+			<color name="albedo" value="0.75,0.75,0.75"/>
+		</bsdf>
+	</mesh>
+</scene>
