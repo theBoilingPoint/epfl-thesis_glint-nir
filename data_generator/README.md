@@ -43,3 +43,6 @@ POST_PROCESSING_TEST = True
 Since the masks generated in the previous step are not binary, `black_pixel_threshold` defines the threshold for a pixel to be considered black. `black_pixel_threshold` should be in range [0, 1]. The higher the threshold, the brighter a black pixel is.
 
 Then again, click the button to run all cells in the notebook.
+
+## Download Data
+Click this [link](https://drive.google.com/drive/folders/1IxgRXdkViqAqc3cbfPNlXiHc7x9WIfUQ?usp=sharing) to download the pregenerated data. 

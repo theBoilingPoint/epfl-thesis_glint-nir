@@ -1,5 +1,5 @@
 {
-    "ref_mesh": "data/nerf_synthetic/duck/clarens",
+    "ref_mesh": "data/bob_clarens",
     "random_textures": true,
     "iter": 5000,
     "save_interval": 100,
@@ -13,5 +13,5 @@
     "laplace_scale" : 3000,
     "display": [{"latlong" : true}, {"bsdf" : "kd"}, {"bsdf" : "ks"}, {"bsdf" : "normal"}],
     "background" : "white",
-    "out_dir": "nerf_duck/tmp2"
+    "out_dir": "nerf_bob/clarens"
 }
