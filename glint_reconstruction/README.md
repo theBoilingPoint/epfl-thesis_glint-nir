@@ -16,7 +16,9 @@ The structure of the folder is shown below:
         └── tests
 ```
 
-Note that to run the code, you need to have a GPU with CUDA support. The code is tested on a NVIDIA GeForce RTX 2080 Ti with CUDA 11.7. Please also make sure to install the corresponding Pytorch version.
+Note that to run the code, you need to have a GPU with CUDA support. The code is tested on a NVIDIA GeForce RTX 2080 Ti with __CUDA 11.7__. Please also make sure to install the corresponding Pytorch version.
+
+This directory also contains a `requirements.txt` file as reference in case you are unsure which package version to use. You don't need to install all the packages in the file. 
 
 ## How to Train
 ### Prepare the Dataset
