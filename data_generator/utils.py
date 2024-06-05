@@ -107,18 +107,17 @@ def replace_masks(mask_dir):
         print(f"Correcting {each_img}...")
         correct_pixel_colour(f"{mask_dir}/{each_img}")
 
-
-def process_rendered_results(input_dir, out_dir, mode, img_format, threshold):
+def process_rendered_results_with_mask(input_dir, out_dir, mode, integrator_type, img_format, threshold):
     # check threshold
     assert threshold >= 0 and threshold <= 1
-    # check if all images have a corresponding mask
-    img_folder = os.path.join(input_dir, mode, "image", img_format)
+
+    img_folder = os.path.join(input_dir, mode, integrator_type, img_format)
     mask_folder = os.path.join(input_dir, mode, "mask", "png")
 
     cur_working_dir = os.getcwd()
     for img_name in os.listdir(img_folder):
         print(f"Processing {mode} image {img_name}...")
-        if img_name == ".DS_Store":
+        if not (img_name.endswith(".png") or img_name.endswith(".exr")):
             continue
 
         # load image and mask
@@ -157,8 +156,7 @@ def process_rendered_results(input_dir, out_dir, mode, img_format, threshold):
         # save the result to the root directory
         imageio.v3.imwrite(img_name, masked_img)
 
-        tmp_dir = f"{out_dir}/{mode}"
-        if not os.path.exists(tmp_dir):
-            os.makedirs(tmp_dir)
+        tmp_dir = os.path.join(out_dir, mode, integrator_type)
+        os.makedirs(tmp_dir, exist_ok=True)
 
-        shutil.move(f"{cur_working_dir}/{img_name}", tmp_dir)
+        shutil.move(os.path.join(cur_working_dir, img_name), tmp_dir)

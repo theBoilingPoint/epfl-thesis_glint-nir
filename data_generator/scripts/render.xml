@@ -1,19 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <scene>
- <integrator type="mask"/>
+ <integrator type="normal"/>
  <sampler type="independent">
   <integer name="sampleCount" value="32"/>
  </sampler>
  <camera type="perspective">
   <float name="fov" value="40"/>
   <transform name="toWorld">
-   <lookat origin="1.0572376251220699, 2.9166102409362793, 2.5740303993225098" target="0.0, 0.0, 0.0" up="0.0, 1.0, 0.0"/>
+   <lookat origin="-0.1719909459352497, 2.9574005603790283, 2.733898401260376" target="0.0, 0.0, 0.0" up="0.0, 1.0, 0.0"/>
   </transform>
   <integer name="height" value="800"/>
   <integer name="width" value="800"/>
  </camera>
  <mesh type="obj">
-  <string name="filename" value="meshes/nerf/bob.obj"/>
+  <string name="filename" value="meshes/nerf/spot.obj"/>
   <bsdf type="glints">
    <float name="alpha" value="0.5"/>
   </bsdf>
