@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <scene>
- <integrator type="normal"/>
+ <integrator type="rgba"/>
  <sampler type="independent">
-  <integer name="sampleCount" value="32"/>
+  <integer name="sampleCount" value="1000"/>
  </sampler>
  <camera type="perspective">
   <float name="fov" value="40"/>
@@ -13,7 +13,7 @@
   <integer name="width" value="800"/>
  </camera>
  <mesh type="obj">
-  <string name="filename" value="meshes/nerf/spot.obj"/>
+  <string name="filename" value="meshes/nerf/bob.obj"/>
   <bsdf type="glints">
    <float name="alpha" value="0.5"/>
   </bsdf>

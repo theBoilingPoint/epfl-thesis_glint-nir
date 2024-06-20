@@ -1,5 +1,13 @@
-__pycache__/
+# Data and output directories
 data/
 out/
 
+# Python cache
+__pycache__/
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+.virtual_documents/
+
+# Apple system files
 .DS_Store
