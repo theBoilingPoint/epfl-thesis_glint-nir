@@ -114,18 +114,23 @@ if __name__ == "__main__":
     obj = "bob"
     env_map = "clarens"
 
+    # output_root_folder = (
+    #     f"out/final/{obj}"  # match this with the output folder you have created
+    # )
     output_root_folder = (
-        f"out/final/{obj}"  # match this with the output folder you have created
+        f"out/test"  
     )
-    geometry_model_name = (
-        f"geometry_{env_map}.pt"  # match this with the name of you saved geometry model
-    )
+    # geometry_model_name = (
+    #     f"geometry_{env_map}.pt"  # match this with the name of you saved geometry model
+    # )
+    geometry_model_name = 'bob.obj'
     material_model_name = (
         f"material_{env_map}.pt"  # match this with the name of you saved material model
     )
-    light_model_name = (
-        f"light_{env_map}.pt"  # match this with the name of you saved light model
-    )
+    # light_model_name = (
+    #     f"light_{env_map}.pt"  # match this with the name of you saved light model
+    # )
+    light_model_name = 'clarens.hdr'
 
     flags = FLAGS(
         os.path.join(output_root_folder, geometry_model_name),
@@ -146,19 +151,21 @@ if __name__ == "__main__":
     glctx = dr.RasterizeGLContext()
     geometry, material, lgt = load_models(flags)
 
-    for it, target in enumerate(dataloader):
-        target = prepare_batch(target, flags.background)
+    print(material)
 
-        result_image, result_dict = validate_itr(
-            glctx, target, geometry, material, lgt, flags
-        )
+    # for it, target in enumerate(dataloader):
+    #     target = prepare_batch(target, flags.background)
 
-        for k in result_dict.keys():
-            # Only saving reference and rendered images.
-            # Check validate_itr in train.py to see what other options are available.
-            if k == "ref" or k == "opt":
-                np_img = result_dict[k].detach().cpu().numpy()
-                print(f"Saving {k} with index {it}...")
-                util.save_image(
-                    flags.out_dir + "/" + ("glint_%03d_%s.png" % (it, k)), np_img
-                )
+    #     result_image, result_dict = validate_itr(
+    #         glctx, target, geometry, material, lgt, flags
+    #     )
+
+    #     for k in result_dict.keys():
+    #         # Only saving reference and rendered images.
+    #         # Check validate_itr in train.py to see what other options are available.
+    #         if k == "ref" or k == "opt":
+    #             np_img = result_dict[k].detach().cpu().numpy()
+    #             print(f"Saving {k} with index {it}...")
+    #             util.save_image(
+    #                 flags.out_dir + "/" + ("glint_%03d_%s.png" % (it, k)), np_img
+    #             )
