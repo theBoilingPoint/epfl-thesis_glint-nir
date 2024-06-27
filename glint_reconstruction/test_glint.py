@@ -7,7 +7,7 @@ from dataset.dataset_nerf import DatasetNERF
 
 from train import prepare_batch, validate_itr
 from geometry.dlmesh import DLMesh
-from render import mesh, util, light
+from render import mesh, util, light, texture
 
 
 @dataclass
@@ -89,24 +89,44 @@ def load_dataset(FLAGS):
 def load_models(FLAGS):
     geometry_file = FLAGS.geometry
     lgt_file = FLAGS.envmap
+    mat_file = FLAGS.material
 
-    if geometry_file.endswith(".pt"):
-        geometry = torch.load(geometry_file)
-    else:
+    if geometry_file.endswith('.obj'):
         base_mesh = mesh.load_mesh(geometry_file)
         geometry = DLMesh(base_mesh, FLAGS)
-
-    if lgt_file.endswith(".pt"):
-        lgt = torch.load(lgt_file)
     else:
+        geometry = torch.load(geometry_file)
+        
+    if lgt_file.endswith('.hdr'):
         lgt = light.load_env(lgt_file, scale=FLAGS.env_scale)
+    else:
+        lgt = torch.load(lgt_file)
+    
+    if mat_file.endswith('.mtl'):
+        # mat = material.load_mtl(mat_file)
+        mat = {
+            'name' : '_default_mat',
+            'bsdf' : 'pbr',
+            'kd'   : texture.Texture2D(torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32, device='cuda')),
+            'ks'   : texture.Texture2D(torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device='cuda'))
+        }
+    else:
+        mat_tmp = torch.load(FLAGS.material)
+        mat = {
+            'name' : '_default_mat',
+            'bsdf' : 'pbr',
+            'kd'   : texture.Texture2D(torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32, device='cuda')),
+            'ks'   : texture.Texture2D(torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device='cuda')),
+            'glint_params': mat_tmp['glint_params'],
+            'glint_3d_noise': mat_tmp['glint_3d_noise'],
+            'glint_4d_noise': mat_tmp['glint_4d_noise']
+        }
+        # mat = torch.load(FLAGS.material)
+        print(
+            f"Predicted Parameters -> _LogMicrofacetDensity: {mat['glint_params'][0]}, _DensityRandomization: {mat['glint_params'][1]}"
+        )
 
-    material = torch.load(FLAGS.material)
-    print(
-        f"Predicted Parameters -> _LogMicrofacetDensity: {material['glint_params'][0]}, _DensityRandomization: {material['glint_params'][1]}"
-    )
-
-    return geometry, material, lgt
+    return geometry, mat, lgt
 
 
 if __name__ == "__main__":
@@ -127,6 +147,7 @@ if __name__ == "__main__":
     material_model_name = (
         f"material_{env_map}.pt"  # match this with the name of you saved material model
     )
+    # material_model_name = 'bob_tri.mtl'
     # light_model_name = (
     #     f"light_{env_map}.pt"  # match this with the name of you saved light model
     # )
@@ -149,23 +170,21 @@ if __name__ == "__main__":
 
     # create rendering context
     glctx = dr.RasterizeGLContext()
-    geometry, material, lgt = load_models(flags)
+    geometry, mat, lgt = load_models(flags)
 
-    print(material)
+    for it, target in enumerate(dataloader):
+        target = prepare_batch(target, flags.background)
 
-    # for it, target in enumerate(dataloader):
-    #     target = prepare_batch(target, flags.background)
+        result_image, result_dict = validate_itr(
+            glctx, target, geometry, mat, lgt, flags
+        )
 
-    #     result_image, result_dict = validate_itr(
-    #         glctx, target, geometry, material, lgt, flags
-    #     )
-
-    #     for k in result_dict.keys():
-    #         # Only saving reference and rendered images.
-    #         # Check validate_itr in train.py to see what other options are available.
-    #         if k == "ref" or k == "opt":
-    #             np_img = result_dict[k].detach().cpu().numpy()
-    #             print(f"Saving {k} with index {it}...")
-    #             util.save_image(
-    #                 flags.out_dir + "/" + ("glint_%03d_%s.png" % (it, k)), np_img
-    #             )
+        for k in result_dict.keys():
+            # Only saving reference and rendered images.
+            # Check validate_itr in train.py to see what other options are available.
+            if k == "ref" or k == "opt":
+                np_img = result_dict[k].detach().cpu().numpy()
+                print(f"Saving {k} with index {it}...")
+                util.save_image(
+                    flags.out_dir + "/" + ("glint_%03d_%s.png" % (it, k)), np_img
+                )

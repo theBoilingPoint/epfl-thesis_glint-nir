@@ -57,10 +57,10 @@ class GlintBRDF:
         # For uniform, although the range is 0-1, the distribution is not uniform in the original code
         # For gaussian, the scale is obtained empirically from running the original code
         uniform = self.noise_4d[
-            slopeCoord.view(-1, 2)[..., 0], slopeCoord.view(-1, 2)[..., 1]
+            slopeCoord.view(-1, 2)[..., 0].to(torch.long), slopeCoord.view(-1, 2)[..., 1].to(torch.long)
         ].view(4, -1, 3, 4)
         gaussian = -4.5 + 9 * self.noise_4d[
-            slopeCoord.view(-1, 2)[..., 1], slopeCoord.view(-1, 2)[..., 0]
+            slopeCoord.view(-1, 2)[..., 1].to(torch.long), slopeCoord.view(-1, 2)[..., 0].to(torch.long)
         ].view(4, -1, 3, 4)
 
         return uniform, gaussian, slopeLerp.to("cuda")
@@ -231,196 +231,128 @@ class GlintBRDF:
         res = torch.sum(results * barycentrics, dim=-1)
 
         return res
+    
+    def GetAnisoCorrectingGridTetrahedron(self, center_special_case, theta_bin_lerp, ratio_lerp, lod_lerp):
+        n = center_special_case.shape[0]
+        device = center_special_case.device
+        
+        # Initialize tensors to store p0, p1, p2, p3
+        p0 = torch.empty((n, 3), device=device)
+        p1 = torch.empty((n, 3), device=device)
+        p2 = torch.empty((n, 3), device=device)
+        p3 = torch.empty((n, 3), device=device)
+        
+        # Define all possible points
+        a = torch.tensor([0, 1, 0], dtype=torch.float32, device=device)
+        b = torch.tensor([0, 0, 0], dtype=torch.float32, device=device)
+        c = torch.tensor([1, 1, 0], dtype=torch.float32, device=device)
+        d = torch.tensor([0, 1, 1], dtype=torch.float32, device=device)
+        e = torch.tensor([0, 0, 1], dtype=torch.float32, device=device)
+        f = torch.tensor([1, 1, 1], dtype=torch.float32, device=device)
+        
+        c_normal = torch.tensor([0.5, 1, 0], dtype=torch.float32, device=device)
+        d_normal = torch.tensor([1, 0, 0], dtype=torch.float32, device=device)
+        e_normal = c
+        f_normal = d
+        g_normal = e
+        h_normal = torch.tensor([0.5, 1, 1], dtype=torch.float32, device=device)
+        i_normal = torch.tensor([1, 0, 1], dtype=torch.float32, device=device)
+        j_normal = f
 
-    def GetAnisoCorrectingGridTetrahedron(
-        self, centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp
-    ):
-        centerSpecialCase = centerSpecialCase.to(torch.bool)
+        # Compute conditions for center special case
+        upper_pyramid = lod_lerp > (1.0 - ratio_lerp)
+        lower_pyramid = lod_lerp < (1.0 - ratio_lerp)
 
-        upper_pyramid_mask = lodLerp > 1.0 - ratioLerp
-        lower_pyramid_mask = lodLerp < 1.0 - ratioLerp
+        left_up_tetrahedron_center = RemapTo01(lod_lerp, 1.0 - ratio_lerp, 1.0) > theta_bin_lerp
+        left_up_tetrahedron_a = RemapTo01(lod_lerp, 1.0 - ratio_lerp, 1.0) > RemapTo01(theta_bin_lerp * 2.0, 0.0, ratio_lerp)
+        left_up_tetrahedron_b = RemapTo01(lod_lerp, 0.0, 1.0 - ratio_lerp) > RemapTo01(theta_bin_lerp, 0.5 - (1.0 - ratio_lerp) * 0.5, 0.5 + (1.0 - ratio_lerp) * 0.5)
+        left_up_tetrahedron_c = RemapTo01(lod_lerp, 1.0 - ratio_lerp, 1.0) > RemapTo01((theta_bin_lerp - 0.5) * 2.0, 1.0 - ratio_lerp, 1.0)
 
-        left_up_tetrahedron_mask = (
-            RemapTo01(lodLerp, 1.0 - ratioLerp, 1.0) > thetaBinLerp
-        )
+        # Compute conditions for the normal case
+        prism_a = (theta_bin_lerp < 0.5) & ((theta_bin_lerp * 2.0) < ratio_lerp)
+        prism_b = (1.0 - ((theta_bin_lerp - 0.5) * 2.0)) > ratio_lerp
+        prism_c = ~(prism_a | prism_b)
 
-        prismA_mask = (thetaBinLerp < 0.5) & (thetaBinLerp * 2.0 < ratioLerp)
-        prismB_mask = 1.0 - ((thetaBinLerp - 0.5) * 2.0) > ratioLerp
-        prismC_mask = (~prismA_mask) & (~prismB_mask)
+        # Center special case
+        cond1 = center_special_case & upper_pyramid & left_up_tetrahedron_center
+        cond2 = center_special_case & upper_pyramid & ~left_up_tetrahedron_center
+        cond3 = center_special_case & ~upper_pyramid
+        # Normal case
+        # Prism A
+        cond4 = ~center_special_case & prism_a & upper_pyramid & left_up_tetrahedron_a
+        cond5 = ~center_special_case & prism_a & upper_pyramid & ~left_up_tetrahedron_a
+        cond6 = ~center_special_case & prism_a & ~upper_pyramid
+        # Prism B
+        cond7 = ~center_special_case & prism_b & lower_pyramid & left_up_tetrahedron_b
+        cond8 = ~center_special_case & prism_b & lower_pyramid & ~left_up_tetrahedron_b
+        cond9 = ~center_special_case & prism_b & ~lower_pyramid
+        # Prism C
+        cond10 = ~center_special_case & prism_c & upper_pyramid & left_up_tetrahedron_c
+        cond11 = ~center_special_case & prism_c & upper_pyramid & ~left_up_tetrahedron_c
+        cond12 = ~center_special_case & prism_c & ~upper_pyramid
 
-        left_up_tetrahedron_mask_prismA = RemapTo01(
-            lodLerp, 1.0 - ratioLerp, 1.0
-        ) > RemapTo01(thetaBinLerp * 2.0, 0.0, ratioLerp)
-        left_up_tetrahedron_mask_prismB = RemapTo01(
-            lodLerp, 0.0, 1.0 - ratioLerp
-        ) > RemapTo01(
-            thetaBinLerp,
-            0.5 - (1.0 - ratioLerp) * 0.5,
-            0.5 + (1.0 - ratioLerp) * 0.5,
-        )
-        left_up_tetrahedron_mask_prismC = RemapTo01(
-            lodLerp, 1.0 - ratioLerp, 1.0
-        ) > RemapTo01((thetaBinLerp - 0.5) * 2.0, 1.0 - ratioLerp, 1.0)
+        p0 = torch.where(cond1.unsqueeze(1) | cond4.unsqueeze(1), a, p0)
+        p0 = torch.where(cond2.unsqueeze(1), f, p0)
+        p0 = torch.where(cond3.unsqueeze(1) | cond6.unsqueeze(1) | cond7.unsqueeze(1), b, p0)
+        p0 = torch.where(cond5.unsqueeze(1) | cond9.unsqueeze(1) | cond10.unsqueeze(1), c_normal, p0)
+        p0 = torch.where(cond8.unsqueeze(1) | cond12.unsqueeze(1), d_normal, p0)
+        p0 = torch.where(cond11.unsqueeze(1), e_normal, p0)
 
-        ps = torch.ones((len(centerSpecialCase), 4, 3)).to("cuda")
+        p1 = torch.where(cond1.unsqueeze(1) | cond2.unsqueeze(1), e, p1)
+        p1 = torch.where(cond3.unsqueeze(1) | cond5.unsqueeze(1) | cond6.unsqueeze(1), a, p1)
+        p1 = torch.where(cond4.unsqueeze(1), f_normal, p1)
+        p1 = torch.where(cond7.unsqueeze(1) | cond9.unsqueeze(1), g_normal, p1)
+        p1 = torch.where(cond8.unsqueeze(1), b, p1)
+        p1 = torch.where(cond10.unsqueeze(1), j_normal, p1)
+        p1 = torch.where(cond11.unsqueeze(1), i_normal, p1)
+        p1 = torch.where(cond12.unsqueeze(1), e_normal, p1)
 
-        # centerSpecialCase
-        M = torch.tensor(
-            [
-                [0.0, 1.0, 0.0],  # 0: a
-                [0.0, 0.0, 0.0],  # 1: b
-                [1.0, 1.0, 0.0],  # 2: c
-                [0.0, 1.0, 1.0],  # 3: d
-                [0.0, 0.0, 1.0],  # 4: e
-                [1.0, 1.0, 1.0],  # 5: f
-            ]
-        ).to("cuda")
-        special_cond_1 = (
-            centerSpecialCase & upper_pyramid_mask & left_up_tetrahedron_mask
-        )
-        special_cond_2 = (
-            centerSpecialCase & upper_pyramid_mask & ~left_up_tetrahedron_mask
-        )
-        special_cond_3 = centerSpecialCase & ~upper_pyramid_mask
-        # p0
-        ps[special_cond_1][:, 0, :] = M[0]
-        ps[special_cond_2][:, 0, :] = M[5]
-        ps[special_cond_3][:, 0, :] = M[1]
-        # p1
-        ps[centerSpecialCase & upper_pyramid_mask][:, 1, :] = M[4]
-        ps[special_cond_3][:, 1, :] = M[0]
-        # p2
-        ps[special_cond_1][:, 2, :] = M[3]
-        ps[special_cond_2][:, 2, :] = M[2]
-        ps[special_cond_3][:, 2, :] = M[2]
-        # p3
-        ps[special_cond_1][:, 3, :] = M[5]
-        ps[special_cond_2][:, 3, :] = M[0]
-        ps[special_cond_3][:, 3, :] = M[4]
+        p2 = torch.where(cond1.unsqueeze(1), d, p2)
+        p2 = torch.where(cond2.unsqueeze(1) | cond3.unsqueeze(1), c, p2)
+        p2 = torch.where(cond4.unsqueeze(1) | cond5.unsqueeze(1) | cond9.unsqueeze(1) | cond10.unsqueeze(1), h_normal, p2)
+        p2 = torch.where(cond6.unsqueeze(1) | cond8.unsqueeze(1) | cond11.unsqueeze(1) | cond12.unsqueeze(1), c_normal, p2)
+        p2 = torch.where(cond7.unsqueeze(1), i_normal, p2)
 
-        # normal case
-        M = torch.tensor(
-            [
-                [0.0, 1.0, 0.0],  # 0: a
-                [0.0, 0.0, 0.0],  # 1: b
-                [0.5, 1.0, 0.0],  # 2: c
-                [1.0, 0.0, 0.0],  # 3: d
-                [1.0, 1.0, 0.0],  # 4: e
-                [0.0, 1.0, 1.0],  # 5: f
-                [0.0, 0.0, 1.0],  # 6: g
-                [0.5, 1.0, 1.0],  # 7: h
-                [1.0, 0.0, 1.0],  # 8: i
-                [1.0, 1.0, 1.0],  # 9: j
-            ]
-        ).to("cuda")
-        # cond general
-        normal_upper = ~centerSpecialCase & upper_pyramid_mask
-        normal_lower = ~centerSpecialCase & lower_pyramid_mask
-        # cond prism A
-        normal_cond_1_prismA = (
-            normal_upper & prismA_mask & left_up_tetrahedron_mask_prismA
-        )
-        normal_cond_2_prismA = (
-            normal_upper & prismA_mask & ~left_up_tetrahedron_mask_prismA
-        )
-        normal_cond_3_prismA = ~centerSpecialCase & prismA_mask & ~upper_pyramid_mask
-        # cond prism B
-        normal_cond_1_prismB = (
-            normal_lower & prismB_mask & left_up_tetrahedron_mask_prismB
-        )
-        normal_cond_2_prismB = (
-            normal_lower & prismB_mask & ~left_up_tetrahedron_mask_prismB
-        )
-        normal_cond_3_prismB = ~centerSpecialCase & prismB_mask & ~lower_pyramid_mask
-        # cond prism C
-        normal_cond_1_prismC = (
-            normal_upper & prismC_mask & left_up_tetrahedron_mask_prismC
-        )
-        normal_cond_2_prismC = (
-            normal_upper & prismC_mask & ~left_up_tetrahedron_mask_prismC
-        )
-        normal_cond_3_prismC = ~centerSpecialCase & prismC_mask & ~upper_pyramid_mask
+        p3 = torch.where(cond1.unsqueeze(1), f, p3)
+        p3 = torch.where(cond2.unsqueeze(1), a, p3)
+        p3 = torch.where(cond3.unsqueeze(1), e, p3)
+        p3 = torch.where(cond4.unsqueeze(1) | cond5.unsqueeze(1) | cond6.unsqueeze(1), g_normal, p3)
+        p3 = torch.where(cond7.unsqueeze(1), c_normal, p3)
+        p3 = torch.where(cond8.unsqueeze(1) | cond9.unsqueeze(1) | cond10.unsqueeze(1) | cond12.unsqueeze(1), i_normal, p3)
+        p3 = torch.where(cond11.unsqueeze(1), j_normal, p3)
 
-        # p0
-        # prism A
-        ps[normal_cond_1_prismA][:, 0, :] = M[0]
-        ps[normal_cond_2_prismA][:, 0, :] = M[2]
-        ps[normal_cond_3_prismA][:, 0, :] = M[1]
-        # prism B
-        ps[normal_cond_1_prismB][:, 0, :] = M[1]
-        ps[normal_cond_2_prismB][:, 0, :] = M[3]
-        ps[normal_cond_3_prismB][:, 0, :] = M[2]
-        # prism C
-        ps[normal_cond_1_prismC][:, 0, :] = M[2]
-        ps[normal_cond_2_prismC][:, 0, :] = M[4]
-        ps[normal_cond_3_prismC][:, 0, :] = M[3]
-
-        # p1
-        # prism A
-        ps[normal_cond_1_prismA][:, 1, :] = M[5]
-        ps[normal_cond_2_prismA][:, 1, :] = M[0]
-        ps[normal_cond_3_prismA][:, 1, :] = M[0]
-        # prism B
-        ps[normal_cond_1_prismB][:, 1, :] = M[6]
-        ps[normal_cond_2_prismB][:, 1, :] = M[1]
-        ps[normal_cond_3_prismB][:, 1, :] = M[6]
-        # prism C
-        ps[normal_cond_1_prismC][:, 1, :] = M[9]
-        ps[normal_cond_2_prismC][:, 1, :] = M[8]
-        ps[normal_cond_3_prismC][:, 1, :] = M[4]
-
-        # p2
-        # prism A
-        ps[~centerSpecialCase & prismA_mask & upper_pyramid_mask][:, 2, :] = M[7]
-        ps[normal_cond_3_prismA][:, 2, :] = M[2]
-        # prism B
-        ps[normal_cond_1_prismB][:, 2, :] = M[8]
-        ps[normal_cond_2_prismB][:, 2, :] = M[2]
-        ps[normal_cond_3_prismB][:, 2, :] = M[7]
-        # prism C
-        ps[normal_cond_1_prismC][:, 2, :] = M[7]
-        ps[normal_cond_2_prismC][:, 2, :] = M[2]
-        ps[normal_cond_3_prismC][:, 2, :] = M[2]
-
-        # p3
-        # prism A
-        ps[~centerSpecialCase & prismA_mask][:, 3, :] = M[6]
-        # prism B
-        ps[normal_cond_1_prismB][:, 3, :] = M[2]
-        ps[normal_cond_2_prismB][:, 3, :] = M[8]
-        ps[normal_cond_3_prismB][:, 3, :] = M[8]
-        # prism C
-        ps[normal_cond_1_prismC][:, 3, :] = M[8]
-        ps[normal_cond_2_prismC][:, 3, :] = M[9]
-        ps[normal_cond_3_prismC][:, 3, :] = M[8]
-
-        return ps.permute(1, 0, 2)
+        # Stack results to get shape (4, n, 3)
+        return torch.stack([p0, p1, p2, p3], dim=0)
 
     def sample_glints(self, localHalfVector, uv, duvdx, duvdy):
         ellipseMajor, ellipseMinor = GetGradientEllipse(duvdx, duvdy)
-        ellipseRatio = torch.norm(ellipseMajor, dim=-1) / torch.clamp(
+        # ellipseRatio must be >= 1.0 otherwise it doesn't make sense
+        ellipseRatio = torch.clamp(
+            torch.norm(ellipseMajor, dim=-1) / torch.clamp(
             torch.norm(ellipseMinor, dim=-1), min=self.EPSILON
-        )
+        ), min=1.0)
 
         # SHARED GLINT NDF VALUES
         halfScreenSpaceScaler = self._ScreenSpaceScale * 0.5
         slope = localHalfVector[..., :2]  # Orthogrtaphic slope projected grid
+        print('slope: ', slope.shape)
         rescaledTargetNDF = self.targetNDF / max(self.maxNDF, self.EPSILON)
 
         # MANUAL LOD COMPENSATION
         lod = torch.log2(torch.norm(ellipseMinor, dim=-1) * halfScreenSpaceScaler)
         lod0 = toIntApprox(lod)
-        lod1 = lod0 + 1
-        divLod0 = 2.0**lod0
-        divLod1 = 2.0**lod1
+        lod1 = lod0 + 1.0
+        divLod0 = torch.pow(2.0, lod0)
+        divLod1 = torch.pow(2.0, lod1)
         lodLerp = torch.frac(lod)
-        footprintAreaLOD0 = torch.exp2(lod0) ** 2.0
-        footprintAreaLOD1 = torch.exp2(lod1) ** 2.0
+        footprintAreaLOD0 = torch.pow(torch.exp2(lod0), 2.0)
+        footprintAreaLOD1 = torch.pow(torch.exp2(lod1), 2.0)
+        print('footprintAreaLOD: ', footprintAreaLOD0.shape) # n*n
 
         # MANUAL ANISOTROPY RATIO COMPENSATION
-        ratio0 = torch.clamp(2.0 ** toIntApprox(torch.log2(ellipseRatio)), 1.0)
+        ratio0 = torch.clamp(torch.pow(2.0, toIntApprox(torch.log2(ellipseRatio))), min=1.0)
         ratio1 = ratio0 * 2.0
-        ratioLerp = torch.clamp(Remap(ellipseRatio, ratio0, ratio1, 0.0, 1.0), 0.0, 1.0)
+        ratioLerp = torch.clamp(Remap(ellipseRatio, ratio0, ratio1, 0.0, 1.0), min=0.0, max=1.0)
 
         # MANUAL ANISOTROPY ROTATION COMPENSATION
         v2 = torch.nn.functional.normalize(ellipseMajor, dim=-1)
@@ -431,17 +363,18 @@ class GlintBRDF:
             )
             * self.RAD2DEG
         )
-        thetaGrid = 90.0 / torch.clamp(ratio0, 2.0)
+        thetaGrid = 90.0 / torch.clamp(ratio0, min=2.0)
         thetaBin = toIntApprox(theta / thetaGrid) * thetaGrid
         thetaBin += thetaGrid / 2.0
         thetaBin0 = torch.where(theta < thetaBin, thetaBin - thetaGrid / 2.0, thetaBin)
         thetaBinH = thetaBin0 + thetaGrid / 4.0
-        thetaBin1 = thetaBinH * 2.0
+        thetaBin1 = thetaBin0 + thetaGrid / 2.0
         thetaBinLerp = Remap(theta, thetaBin0, thetaBin1, 0.0, 1.0)
         thetaBin0 = torch.where(thetaBin0 <= 0.0, 180.0 + thetaBin0, thetaBin0)
 
         # TETRAHEDRONIZATION OF ROTATION + RATIO + LOD GRID
-        centerSpecialCase = torch.where(ratio0 == 1.0, ratio0, self.ZERO)
+        # centerSpecialCase = torch.where(ratio0 == 1.0, ratio0, self.ZERO)
+        centerSpecialCase = ratio0 == 1.0
         divLods = torch.stack((divLod0, divLod1), dim=-1)
         footprintAreas = torch.stack((footprintAreaLOD0, footprintAreaLOD1), dim=-1)
         ratios = torch.stack((ratio0, ratio1), dim=-1)
@@ -452,24 +385,23 @@ class GlintBRDF:
         tetras = self.GetAnisoCorrectingGridTetrahedron(
             centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp
         )
+        print('tetras: ', tetras.shape)
         # Account for center singularity in barycentric computation
         thetaBinLerp = torch.where(
-            centerSpecialCase == 1.0,
+            centerSpecialCase,
             Remap01To(thetaBinLerp, 0.0, ratioLerp),
             thetaBinLerp,
         )
         tetraBarycentricWeights = GetBarycentricWeightsTetrahedron(
             torch.stack((thetaBinLerp, ratioLerp, lodLerp), dim=-1), tetras
         )  # Compute barycentric coordinates within chosen tetrahedron
+        print('tetraBarycentricWeights: ', tetraBarycentricWeights.shape)
 
         # PREPARE NEEDED ROTATIONS
         tetras[..., 0] *= 2
-
-        # if (centerSpecialCase): # Account for center singularity (if center vertex => no rotation)
-        three = torch.tensor(3.0).to("cuda")
         tetras[..., 0] = torch.where(
-            centerSpecialCase == 1.0,
-            torch.where(tetras[..., 1] == 0.0, three, tetras[..., 0]),
+            centerSpecialCase,
+            torch.where(tetras[..., 1] == 0.0, 3.0, tetras[..., 0]),
             tetras[..., 0],
         )
 

@@ -143,19 +143,17 @@ def HashWithoutSine13(p3):
 
 def GetGradientEllipse(duvdx, duvdy):
     # Construct Jacobian matrix
-    # Note that HLSL is column major: https://stackoverflow.com/questions/22756121/confuse-with-row-major-and-column-major-matrix-multiplication-in-hlsl#:~:text=HLSL%20uses%20Column%2DMajor%20and%20XNAMath%20uses%20ROW%2DMajor.
-    J = torch.transpose(torch.stack([duvdx, duvdy], dim=2), 1, 2)
-    # a random tensor act as a replacement for the zero determinant matrices
-    replacement = torch.tensor([[0.6533, 0.4048], [0.8707, 0.2704]], device="cuda")
-    # Check if determinant is zero and replace the matrices
-    J = torch.where(
-        torch.det(J).unsqueeze(1).unsqueeze(2) == 0,
-        replacement,
-        J,
-    )
+    J = torch.stack((duvdx, duvdy), dim=-1)
+    
+    # ridge regularisation to prevent matrices that have determinants of 0
+    identity = torch.eye(2).expand(J.shape[0], -1, -1).cuda()
+    J += EPSILON * identity
+    
+    # Make sure that our inverse Jacobians are valid
+    assert not (torch.linalg.det(J) == 0).any()
 
     J = torch.linalg.inv(J)
-    J = torch.matmul(J, torch.transpose(J, 1, 2))
+    J = torch.bmm(J, J.permute(0, 2, 1).contiguous())
 
     a = J[..., 0, 0]
     c = J[..., 1, 0]
@@ -163,12 +161,13 @@ def GetGradientEllipse(duvdx, duvdy):
 
     T = a + d
     D = torch.linalg.det(J)
-    # They are meant to be > 0.0
-    L1 = remove_zeros(torch.abs(T / 2.0 - torch.pow(T * T / 3.99999 - D, 0.5)))
-    L2 = remove_zeros(torch.abs(T / 2.0 + torch.pow(T * T / 3.99999 - D, 0.5)))
+    # They are meant to be > 0.0 because of the '/ torch.sqrt(L1)' term
+    L1 = torch.clamp(T / 2.0 - torch.pow(T * T / 3.99999 - D, 0.5), min=EPSILON) 
+    L2 = torch.clamp(T / 2.0 + torch.pow(T * T / 3.99999 - D, 0.5), min=EPSILON)
 
     A0 = torch.stack((L1 - d, c), dim=-1)
     A1 = torch.stack((L2 - d, c), dim=-1)
+    
     r0 = 1.0 / torch.sqrt(L1)
     r1 = 1.0 / torch.sqrt(L2)
 
@@ -222,7 +221,8 @@ def BilinearLerp(values, valuesLerp):
 
 
 def Remap(s, a1, a2, b1, b2):
-    return b1 + (s - a1) * (b2 - b1) / remove_zeros(a2 - a1)
+    # return b1 + (s - a1) * (b2 - b1) / remove_zeros(a2 - a1)
+    return b1 + (s - a1) * (b2 - b1) / (a2 - a1 + EPSILON)
 
 
 def Remap01To(s, b1, b2):
@@ -230,36 +230,42 @@ def Remap01To(s, b1, b2):
 
 
 def RemapTo01(s, a1, a2):
-    return (s - a1) / remove_zeros(a2 - a1)
+    # return (s - a1) / remove_zeros(a2 - a1)
+     return (s - a1) / (a2 - a1 + EPSILON)
 
 
 def GetBarycentricWeightsTetrahedron(p, v):
-    v_diff = v[:3, ...] - v[-1, ...]
-    c11 = v_diff[0]
-    c21 = v_diff[1]
-    c31 = v_diff[2]
-    c41 = v[3] - p
+    # Ensure p and v are tensors and on the same device
+    p = p.to(v.device)
+    
+    # Extract vertices v1, v2, v3, v4 from v
+    v1 = v[0]
+    v2 = v[1]
+    v3 = v[2]
+    v4 = v[3]
+    
+    # Compute differences
+    c11 = v1 - v4
+    c21 = v2 - v4
+    c31 = v3 - v4
+    c41 = v4 - p
+    
+    # Compute intermediate values
+    m1 = c31[:, 1:] / (c31[:, :1] + EPSILON)  # Add epsilon to avoid division by zero
+    c12 = c11[:, 1:] - c11[:, :1] * m1
+    c22 = c21[:, 1:] - c21[:, :1] * m1
+    c32 = c41[:, 1:] - c41[:, :1] * m1
+    
+    uvwk = torch.zeros((p.shape[0], 4), device=p.device, dtype=p.dtype)
+    m2 = c22[:, 1] / (c22[:, 0] + EPSILON)  # Add epsilon to avoid division by zero
+    
+    uvwk[:, 0] = (c32[:, 0] * m2 - c32[:, 1]) / (c12[:, 1] - c12[:, 0] * m2 + EPSILON)  # Add epsilon to avoid division by zero
+    uvwk[:, 1] = -(c32[:, 0] + c12[:, 0] * uvwk[:, 0]) / (c22[:, 0] + EPSILON)  # Add epsilon to avoid division by zero
+    uvwk[:, 2] = -(c41[:, 0] + c21[:, 0] * uvwk[:, 1] + c11[:, 0] * uvwk[:, 0]) / (c31[:, 0] + EPSILON)  # Add epsilon to avoid division by zero
+    uvwk[:, 3] = 1.0 - uvwk[:, 2] - uvwk[:, 1] - uvwk[:, 0]
 
-    m1 = c31[..., 1:] / remove_zeros(c31[..., 0]).unsqueeze(-1)
-    c12 = c11[..., 1:] - c11[..., 0].unsqueeze(-1) * m1
-    c22 = c21[..., 1:] - c21[..., 0].unsqueeze(-1) * m1
-    c32 = c41[..., 1:] - c41[..., 0].unsqueeze(-1) * m1
-
-    m2 = c22[..., 1] / remove_zeros(c22[..., 0])
-    uvwk_0 = (c32[..., 0] * m2 - c32[..., 1]) / remove_zeros(
-        c12[..., 1] - c12[..., 0] * m2
-    )
-    uvwk_1 = -(c32[..., 0] + c12[..., 0] * uvwk_0) / remove_zeros(c22[..., 0])
-    uvwk_2 = -(
-        c41[..., 0] + c21[..., 0] * uvwk_1 + c11[..., 0] * uvwk_0
-    ) / remove_zeros(c31[..., 0])
-    uvwk_3 = 1.0 - uvwk_2 - uvwk_1 - uvwk_0
-
-    res = torch.nn.functional.softmax(
-        torch.stack((uvwk_0, uvwk_1, uvwk_2, uvwk_3), dim=-1), dim=-1
-    )
-
-    # The range of the return values depends on the input vertices and the position of the point p relative to the
-    # tetrahedron. In general, the barycentric coordinates should satisfy the condition 0 <= uvwk.x, uvwk.y, uvwk.z, uvwk.w <= 1
-    # and uvwk.x + uvwk.y + uvwk.z + uvwk.w = 1. These conditions ensure that the point p lies within the tetrahedron.
-    return res
+    # Ensure non-negativity and sum-to-one condition
+    uvwk = torch.clamp(uvwk, min=0.0)
+    uvwk = uvwk / uvwk.sum(dim=1, keepdim=True)
+    
+    return uvwk

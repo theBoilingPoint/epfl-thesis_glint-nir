@@ -87,33 +87,11 @@ class EnvironmentLight(torch.nn.Module):
         occlusion = (1.0 - ks[..., 0:1])  # Modulate by hemisphere visibility
         roughness = ks[..., 1:2]  # y component
         metallic = ks[..., 2:3]  # z component
-
-        if specular:
-            if not train_glint:
-                spec_col  = (1.0 - metallic)*0.04 + kd * metallic
-                diff_col  = kd * (1.0 - metallic)
-            else:
-                # Fine-grained parameters for occlusion effects
-                alpha = 0.0
-                beta = 0.0
-                gamma = 0.0
-                metallic = occlusion * torch.where(
-                    occlusion < occlusion.mean() + alpha * occlusion.std(),
-                    torch.where(
-                        torch.logical_or(
-                            metallic < metallic.mean() + beta * metallic.std(),
-                            occlusion < occlusion.mean() + gamma * occlusion.std()
-                        ),
-                        torch.clamp(metallic, 0.0, 1.0),
-                        metallic
-                    ),
-                    metallic
-                )
-                spec_col = kd * metallic**2
-                diff_col = kd
-        else:
-            diff_col = kd
-
+        
+        diff_col = kd # assume this is in range [0, 1]
+        spec_col = 1.0 - kd
+        
+        # The diffuse part of the split sum approximation
         reflvec = util.safe_normalize(util.reflect(wo, gb_normal))
         nrmvec = gb_normal
         if self.mtx is not None: # Rotate lookup
@@ -126,6 +104,29 @@ class EnvironmentLight(torch.nn.Module):
         shaded_col = diffuse * diff_col
 
         if specular:
+            if not train_glint:
+                spec_col  = (1.0 - metallic)*0.04 + kd * metallic
+                diff_col  = kd * (1.0 - metallic)
+            # else:
+            #     # Fine-grained parameters for occlusion effects
+            #     alpha = 0.0
+            #     beta = 0.0
+            #     gamma = 0.0
+            #     metallic = occlusion * torch.where(
+            #         occlusion < occlusion.mean() + alpha * occlusion.std(),
+            #         torch.where(
+            #             torch.logical_or(
+            #                 metallic < metallic.mean() + beta * metallic.std(),
+            #                 occlusion < occlusion.mean() + gamma * occlusion.std()
+            #             ),
+            #             torch.clamp(metallic, 0.0, 1.0),
+            #             metallic
+            #         ),
+            #         metallic
+            #     )
+            #     spec_col = kd * metallic**2
+
+        # if specular:
             # Lookup FG term from lookup texture
             NdotV = torch.clamp(util.dot(wo, gb_normal), min=1e-4)
             fg_uv = torch.cat((NdotV, roughness), dim=-1)
@@ -135,10 +136,20 @@ class EnvironmentLight(torch.nn.Module):
 
             # Roughness adjusted specular env lookup
             miplevel = self.get_mip(roughness)
+            # spec should be Li with shape n,800,800,3
             spec = dr.texture(self.specular[0][None, ...], reflvec.contiguous(), mip=list(m[None, ...] for m in self.specular[1:]), mip_level_bias=miplevel[..., 0], filter_mode='linear-mipmap-linear', boundary_mode='cube')
-
             # Compute aggregate lighting
             reflectance = spec_col * fg_lookup[...,0:1] + fg_lookup[...,1:2]
+            
+            if train_glint:
+                print('training glints')
+                k = (roughness + 1) * (roughness + 1) / 8
+                wiDotN = torch.clamp(util.dot(reflvec, gb_normal), min=1e-4)
+                G1 = NdotV / (NdotV * (1 - k) + k)
+                G2 = wiDotN / (wiDotN * (1 - k) + k)
+                G = G1 * G2
+                reflectance = ks * metallic * G / (4 * NdotV * wiDotN)
+            
             shaded_col += spec * reflectance
 
         return shaded_col * occlusion

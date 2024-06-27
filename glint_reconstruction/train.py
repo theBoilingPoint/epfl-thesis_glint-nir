@@ -8,6 +8,7 @@
 # its affiliates is strictly prohibited.
 
 import os
+os.environ["OPENCV_IO_ENABLE_OPENEXR"]="1"
 import time
 import argparse
 import json
