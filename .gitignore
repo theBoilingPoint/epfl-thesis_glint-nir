@@ -11,3 +11,6 @@ __pycache__/
 
 # Apple system files
 .DS_Store
+
+# Text Editor files
+.vscode/
