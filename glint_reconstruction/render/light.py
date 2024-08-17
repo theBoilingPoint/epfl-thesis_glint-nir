@@ -107,26 +107,7 @@ class EnvironmentLight(torch.nn.Module):
             if not train_glint:
                 spec_col  = (1.0 - metallic)*0.04 + kd * metallic
                 diff_col  = kd * (1.0 - metallic)
-            # else:
-            #     # Fine-grained parameters for occlusion effects
-            #     alpha = 0.0
-            #     beta = 0.0
-            #     gamma = 0.0
-            #     metallic = occlusion * torch.where(
-            #         occlusion < occlusion.mean() + alpha * occlusion.std(),
-            #         torch.where(
-            #             torch.logical_or(
-            #                 metallic < metallic.mean() + beta * metallic.std(),
-            #                 occlusion < occlusion.mean() + gamma * occlusion.std()
-            #             ),
-            #             torch.clamp(metallic, 0.0, 1.0),
-            #             metallic
-            #         ),
-            #         metallic
-            #     )
-            #     spec_col = kd * metallic**2
 
-        # if specular:
             # Lookup FG term from lookup texture
             NdotV = torch.clamp(util.dot(wo, gb_normal), min=1e-4)
             fg_uv = torch.cat((NdotV, roughness), dim=-1)

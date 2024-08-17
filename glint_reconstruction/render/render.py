@@ -131,24 +131,22 @@ def shade(
 
             batch_size = half_vec_ts.shape[0]
             img_dim = half_vec_ts.shape[1]
-            num_vals = batch_size * img_dim * img_dim
+            # num_vals = batch_size * img_dim * img_dim
 
             # Hardcoded
-            _LogMicrofacetDensity = torch.full(
-                (num_vals,), material["glint_params"][0], device="cuda"
-            )  # number of facets
-            _DensityRandomization = torch.full(
-                (num_vals,), material["glint_params"][1], device="cuda"
-            )  # same number of facets, but higher -> more glints
+            # _LogMicrofacetDensity = torch.full(
+            #     (num_vals,), material["glint_params"][0], device=FLAGS.device
+            # )  # number of facets
+            # _DensityRandomization = torch.full(
+            #     (num_vals,), material["glint_params"][1], device=FLAGS.device
+            # )  # same number of facets, but higher -> more glints
 
             # initialise the glint sampling class
             glint_evaluator = GlintBRDF(
-                _LogMicrofacetDensity,
+                material["glint_params"],
                 ks[..., 1].view(-1).detach(),
-                _DensityRandomization,
-                material["glint_3d_noise"],
-                material["glint_4d_noise"],
-                FLAGS.train_res,
+                material["glint_pcg3d"],
+                material["glint_4d_noise"]
             )
 
             # sample glint texture

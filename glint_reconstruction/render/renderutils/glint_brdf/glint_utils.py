@@ -1,8 +1,33 @@
 import torch
+import torch.nn as nn
 import numpy as np
 
 EPSILON = 1e-6
 
+class PCG3dFloat(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(PCG3dFloat, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.LeakyReLU(0.01),
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.01),
+            nn.Linear(512, 1024),
+            nn.LeakyReLU(0.01),
+            nn.Linear(1024, 512),
+            nn.LeakyReLU(0.01),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.01),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.01),
+            nn.Linear(128, output_size),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        x = self.model(x)
+
+        return x
 
 @torch.no_grad()
 def print_gpu_mem():
@@ -53,10 +78,8 @@ def remove_zeros(tensor):
 
     return res
 
-
 def toIntApprox(tensor):
-    return torch.where(tensor >= 0.0, torch.floor(tensor), torch.ceil(tensor))
-
+    return torch.clamp(torch.trunc(tensor), min=-2147483648.0, max=2147483647.0)
 
 def normalise_to(tensor, min, max):
     min_val = tensor.min()
@@ -73,25 +96,6 @@ def scale(tensor, min=0.0, max=1.0):
 The codes below are modified from Glints2023.hlsl in https://drive.google.com/file/d/1YQDxlkZFEwV6ZeaXCUYMhB4P-3ODS32e/view.
 Credit to Deliot et al. (https://thomasdeliot.wixsite.com/blog/single-post/hpg23-real-time-rendering-of-glinty-appearance-using-distributed-binomial-laws-on-anisotropic-grids).
 """
-
-
-@torch.no_grad()
-def pcg3dFloat(tensor):
-    v = np.uint32(tensor) * np.uint32(1664525) * np.uint32(1013904223)
-
-    v[..., 0] += v[..., 1] * v[..., 2]
-    v[..., 1] += v[..., 2] * v[..., 0]
-    v[..., 2] += v[..., 0] * v[..., 1]
-
-    v ^= v >> np.uint32(16)
-
-    v[..., 0] += v[..., 1] * v[..., 2]
-    v[..., 1] += v[..., 2] * v[..., 0]
-    v[..., 2] += v[..., 0] * v[..., 1]
-
-    return torch.tensor(v * (1.0 / 4294967296.0), dtype=torch.float32, device="cuda")
-
-
 @torch.no_grad()
 def asuint(f):
     return np.array(f, dtype=np.float32).view(np.uint32)
@@ -119,26 +123,18 @@ def UnpackFloatParallel4(input: np.ndarray):
 
     return res
 
-
 def sampleNormalDistribution(u, mu, sigma):
-    # 2.0 * u - 1.0 must be within (-1.0, 1.0) => u must be in (0.0, 1.0)
-    # shape of (sigma * 1.414213).unsqueeze(-1)[None].repeat(4,1,1) is (4, n, 1)
-    res = (sigma * 1.414213).unsqueeze(-1)[None].repeat(4, 1, 1) * torch.erfinv(
+    res = mu + sigma * torch.sqrt(torch.tensor(2.0)) * torch.erfinv(
         torch.clamp(2.0 * u - 1.0, min=-0.9999999, max=0.9999999)
-    ) + mu.unsqueeze(-1)[None].repeat(
-        4, 1, 1
-    )  # (4, n, 3)
+    )
     assert torch.all(torch.isfinite(res))
     return res
-
 
 def HashWithoutSine13(p3):
     p3 = torch.frac(p3 * 0.1031)
     p3 += torch.sum(p3 * (p3[..., [1, 2, 0]] + 33.33), dim=-1).unsqueeze(-1)
 
-    res = torch.frac((p3[..., 0] + p3[..., 1]) * p3[..., 2]).unsqueeze(-1)
-
-    return res
+    return torch.frac((p3[..., 0] + p3[..., 1]) * p3[..., 2])
 
 
 def GetGradientEllipse(duvdx, duvdy):
@@ -197,17 +193,17 @@ def SlopeToVector(s):
     return res
 
 
-def RotateUV(uv, rotation, mid):
+def RotateUV(uv, rotation):
+    # uv is (n, 2) and rotation is (4, n)
     a = (
-        torch.cos(rotation) * (uv[..., 0].unsqueeze(-1) - mid[0])
-        + torch.sin(rotation) * (uv[..., 1].unsqueeze(-1) - mid[1])
-        + mid[0]
-    )
+        torch.cos(rotation) * uv[..., 0]
+        + torch.sin(rotation) * uv[..., 1]
+    ).unsqueeze(-1)
     b = (
-        torch.cos(rotation) * (uv[..., 1].unsqueeze(-1) - mid[1])
-        - torch.sin(rotation) * (uv[..., 0].unsqueeze(-1) - mid[0])
-        + mid[1]
-    )
+        torch.cos(rotation) * uv[..., 1]
+        - torch.sin(rotation) * uv[..., 0]
+    ).unsqueeze(-1)
+    
     return torch.cat((a, b), dim=-1)
 
 
@@ -221,7 +217,6 @@ def BilinearLerp(values, valuesLerp):
 
 
 def Remap(s, a1, a2, b1, b2):
-    # return b1 + (s - a1) * (b2 - b1) / remove_zeros(a2 - a1)
     return b1 + (s - a1) * (b2 - b1) / (a2 - a1 + EPSILON)
 
 
@@ -230,7 +225,6 @@ def Remap01To(s, b1, b2):
 
 
 def RemapTo01(s, a1, a2):
-    # return (s - a1) / remove_zeros(a2 - a1)
      return (s - a1) / (a2 - a1 + EPSILON)
 
 
@@ -268,4 +262,5 @@ def GetBarycentricWeightsTetrahedron(p, v):
     uvwk = torch.clamp(uvwk, min=0.0)
     uvwk = uvwk / uvwk.sum(dim=1, keepdim=True)
     
+    assert is_valid(uvwk)
     return uvwk

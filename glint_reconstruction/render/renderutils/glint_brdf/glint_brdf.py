@@ -1,5 +1,5 @@
 import torch
-import imageio
+from torch.utils.checkpoint import checkpoint
 
 from .glint_utils import *
 
@@ -7,64 +7,73 @@ from .glint_utils import *
 This class is modified from Glints2023.hlsl in https://drive.google.com/file/d/1YQDxlkZFEwV6ZeaXCUYMhB4P-3ODS32e/view.
 Credit to Deliot et al. (https://thomasdeliot.wixsite.com/blog/single-post/hpg23-real-time-rendering-of-glinty-appearance-using-distributed-binomial-laws-on-anisotropic-grids).
 """
-
-
 class GlintBRDF:
     def __init__(
         self,
-        _LogMicrofacetDensity,
+        glint_params,
         _MicrofacetRoughness,
-        _DensityRandomization,
-        noise_3d,
-        noise_4d,
-        resolution,
+        pcg3dFloat,
+        noise_4d
     ):
         # constants
-        self.DEG2RAD = 0.01745329251
-        self.RAD2DEG = 57.2957795131
         self.EPSILON = 1e-7
-        self.ZERO = torch.tensor(0.0, device="cuda")
-        self.ONE = torch.tensor(1.0, device="cuda")
-        self._ScreenSpaceScale = 2.75
         self.targetNDF = 50000.0
         self.maxNDF = 100000.0
-        self._MicrofacetRoughness = (
-            _MicrofacetRoughness  # should be fixed after the first 2 passes
-        )
-        self.noise_3d = noise_3d
+        self._MicrofacetRoughness = _MicrofacetRoughness  
+        self.pcg3dFloat = pcg3dFloat
         self.noise_4d = noise_4d
-        self.resolution = int(resolution[0])  # Assuming a square image -> H = W
-        self.batch_size = int(_MicrofacetRoughness.shape[0] / self.resolution**2)
+        self.resolution = noise_4d.shape[0]  # Assuming a square image -> H = W
 
         # below should be the parameters approximated from the counting method
-        self._LogMicrofacetDensity = _LogMicrofacetDensity
-        self._DensityRandomization = _DensityRandomization
+        self._LogMicrofacetDensity = glint_params[0]
+        self._DensityRandomization = glint_params[1]
+        self._ScreenSpaceScale = glint_params[2]
+    
+    @torch.no_grad()
+    def sampleNoiseMap4d(self, slope, batch_size=1024):
+        slopeCoord = torch.remainder(torch.floor(slope).to(torch.long), self.resolution)
+    
+        # Extract the indices from the second tensor
+        indices_x = slopeCoord[..., 0]  # Shape: [4, n*n]
+        indices_y = slopeCoord[..., 1]  # Shape: [4, n*n]
+
+        # Determine the total number of elements to process
+        total_elements = indices_x.size(1)
+
+        # Prepare a list to hold the results
+        results = []
+
+        # Process in smaller batches
+        for start_idx in range(0, total_elements, batch_size):
+            end_idx = min(start_idx + batch_size, total_elements)
+
+            # Slice the indices for the current batch
+            batch_indices_x = indices_x[:, start_idx:end_idx]
+            batch_indices_y = indices_y[:, start_idx:end_idx]
+
+            # Gather the values for the current batch
+            batch_result = self.noise_4d[batch_indices_x, batch_indices_y]  # Shape: [4, batch_size, 4]
+
+            # Append the result to the list
+            results.append(batch_result)
+
+        # Concatenate the results along the second dimension
+        final_result = torch.cat(results, dim=1)  # Shape: [4, n*n, 4]
+
+        return final_result
 
     def CustomRand4Texture(self, slope, slopeRandOffset):
-        slope2 = (
-            torch.abs(slope)
-            / torch.clamp(self._MicrofacetRoughness.unsqueeze(-1), min=self.EPSILON)
-        )[None, :, None, :].repeat(
-            4, 1, 3, 1
-        )  # (4, n, 3, 2)
-        slope2 = slope2 + (slopeRandOffset * self.resolution)
+        slope2 = torch.abs(slope) / torch.clamp(self._MicrofacetRoughness.unsqueeze(-1), min=self.EPSILON) + slopeRandOffset * self.resolution
         slopeLerp = torch.frac(slope2)
+       
+        outUniform = self.sampleNoiseMap4d(slope2).requires_grad_()
+        # Note that there in the original code we are not suposed to use outUniform 
+        # but rather RandXorshiftFloat(rngState01)
+        outGaussian = sampleNormalDistribution(outUniform, 0.0, 1.0) 
 
-        slopeCoord = (
-            torch.floor(slope2).to(torch.int32) % self.resolution
-        )  # (4, n, 3, 2)
-
-        # For uniform, although the range is 0-1, the distribution is not uniform in the original code
-        # For gaussian, the scale is obtained empirically from running the original code
-        uniform = self.noise_4d[
-            slopeCoord.view(-1, 2)[..., 0].to(torch.long), slopeCoord.view(-1, 2)[..., 1].to(torch.long)
-        ].view(4, -1, 3, 4)
-        gaussian = -4.5 + 9 * self.noise_4d[
-            slopeCoord.view(-1, 2)[..., 1].to(torch.long), slopeCoord.view(-1, 2)[..., 0].to(torch.long)
-        ].view(4, -1, 3, 4)
-
-        return uniform, gaussian, slopeLerp.to("cuda")
-
+        # return uniform, gaussian, slopeLerp.to("cuda")
+        return outUniform, outGaussian, slopeLerp
+        
     def GenerateAngularBinomialValueForSurfaceCell(
         self,
         randB,
@@ -77,10 +86,6 @@ class GlintBRDF:
         microfacetCount,
     ):
         gating = torch.where(
-            randB < footprintOneHitProba.unsqueeze(-1), self.ONE, self.ZERO
-        )  # so that this line is differentiable
-
-        gating = torch.where(
             binomialSmoothWidth.unsqueeze(-1) > self.EPSILON,
             torch.clamp(
                 RemapTo01(
@@ -91,122 +96,109 @@ class GlintBRDF:
                 0.0,
                 1.0,
             ),
-            gating,
-        )  # (4, n, 3, 4)
-
+            torch.where(randB < footprintOneHitProba.unsqueeze(-1), 1.0, 0.0),
+        )  
+        
         # Compute gauss
-        gauss = randG * footprintSTD.unsqueeze(-1) + footprintMean.unsqueeze(-1)
         gauss = torch.clamp(
-            torch.floor(gauss), self.ZERO, microfacetCount.unsqueeze(-1)
-        )
-
-        results = gating * (1.0 + gauss)  # (4, n, 3, 4)
-        res = BilinearLerp(results, slopeLerp)  # (4, n, 3)
+            torch.floor(randG * footprintSTD.unsqueeze(-1) + footprintMean.unsqueeze(-1)), 
+            min=torch.tensor(0.0).to('cuda'), 
+            max=microfacetCount.unsqueeze(-1)
+        )  
+ 
+        res = BilinearLerp(gating * (1.0 + gauss), slopeLerp)
 
         return res
+    
+    def computePcg3dFloat_in_batches(self, input_tensor, batch_size=16):
+        output_list = []
+        n = input_tensor.size(1)  # Get the size of the second dimension
 
-    def SampleGlintGridSimplex(
+        for i in range(0, n, batch_size):
+            # Slice the input tensor to create a smaller batch
+            batch = input_tensor[:, i:i + batch_size, :]
+            # Process the batch using the model
+            # output_batch = self.pcg3dFloat(batch)
+            output_batch = checkpoint(self.pcg3dFloat, batch)
+            # Store the output
+            output_list.append(output_batch)
+
+        # Concatenate all the outputs along the second dimension
+        output_tensor = torch.cat(output_list, dim=1)
+        
+        return output_tensor
+
+    def SampleGlintGridSimplex( 
         self, uv, gridSeed, slope, footprintAreas, targetNDF, gridWeights
     ):
         # Get surface space glint simplex grid cell
         gridToSkewedGrid = torch.tensor(
-            [[1.0, -0.57735027], [0.0, 1.15470054]], device="cuda"
+            [[1.0, -0.57735027], [0.0, 1.15470054]], device="cuda", dtype=torch.float32
         )
-        skewedCoord = torch.matmul(gridToSkewedGrid, uv.transpose(1, 2)).transpose(
-            1, 2
-        )  # (4, n, 2)
 
-        temp = torch.cat(
-            (
-                torch.frac(skewedCoord),
-                torch.zeros((4, skewedCoord.shape[1], 1)).to("cuda"),
-            ),
-            dim=-1,
-        )  # (4, n, 3)
-        temp[..., 2] = 1.0 - temp[..., 0] - temp[..., 1]
+        skewedCoord = torch.einsum('ij,bkj->bki', gridToSkewedGrid, uv) # (4, n, 2)
+        
 
-        s = torch.where(-temp[..., 2] >= 0.0, self.ONE, self.ZERO)
+        baseId = torch.floor(skewedCoord) # (4, n, 2)
+        
+        x = skewedCoord[..., 0]
+        y = skewedCoord[..., 1]
+        temp = torch.stack((x, y, 1.0 - x - y), dim=-1)
+
+        s = torch.where(-temp[..., 2] < 0.0, 0.0, 1.0)
         s2 = 2.0 * s - 1.0
-
-        baseId = toIntApprox(torch.floor(skewedCoord))[:, :, None, :].repeat(
-            1, 1, 3, 1
-        )  # (4, n, 3, 2)
-        glints = baseId + torch.cat(
-            (
-                torch.cat((s.unsqueeze(-1), s.unsqueeze(-1)), dim=-1)[:, :, None, :],
-                torch.cat((s.unsqueeze(-1), (1.0 - s).unsqueeze(-1)), dim=-1)[
-                    :, :, None, :
-                ],
-                torch.cat(((1.0 - s).unsqueeze(-1), s.unsqueeze(-1)), dim=-1)[
-                    :, :, None, :
-                ],
-            ),
-            dim=-2,
-        )  # (4, n, 3, 2)
-
+        
+        glint0 = torch.abs(baseId + toIntApprox(torch.stack((s, s), dim=-1)) + 2147483648.0)
+        glint1 = torch.abs(baseId + toIntApprox(torch.stack((s, 1.0 - s), dim=-1)) + 2147483648.0)
+        glint2 = torch.abs(baseId + toIntApprox(torch.stack((1.0 - s, s), dim=-1)) + 2147483648.0)
+        
         barycentrics = torch.stack(
             (-temp[..., 2] * s2, s - temp[..., 1] * s2, s - temp[..., 0] * s2), dim=-1
         )  # (4, n, 3)
-
+        
         # Get per surface cell per slope cell random numbers
-        rands = pcg3dFloat(
-            torch.cat(
-                (
-                    toIntApprox(glints) + 2147483648,
-                    gridSeed[:, :, None, :].repeat(1, 1, 3, 1),
-                ),
-                dim=-1,
-            ).cpu()
-        )  # (4, n, 3, 3)
-        # (4, n, 3, 3)
-        rands[..., 1:] = normalise_to(
-            rands[..., 1:]
-            + self.noise_3d[:, :, :, None].repeat(1, self.batch_size, 1, 3)[..., 1:],
-            0.0,
-            1.0,
-        )  # (4, n, 3, 3)
-
-        randSlopesB, randSlopesG, slopeLerps = self.CustomRand4Texture(
-            slope, rands[..., 1:]
-        )
+        rand0 = self.computePcg3dFloat_in_batches((torch.cat((glint0, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+        rand1 = self.computePcg3dFloat_in_batches((torch.cat((glint1, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+        rand2 = self.computePcg3dFloat_in_batches((torch.cat((glint2, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+ 
+        rand0SlopesB, rand0SlopesG, slopeLerp0 = self.CustomRand4Texture(slope, rand0[..., 1:])
+        rand1SlopesB, rand1SlopesG, slopeLerp1 = self.CustomRand4Texture(slope, rand1[..., 1:])
+        rand2SlopesB, rand2SlopesG, slopeLerp2 = self.CustomRand4Texture(slope, rand2[..., 1:])
 
         # Compute microfacet count with randomization
+        randX = torch.stack((rand0[..., 0], rand1[..., 0], rand2[..., 0]), dim=2)
         logDensityRand = torch.clamp(
             sampleNormalDistribution(
-                rands[..., 0],  # (4, n, 3)
-                self._LogMicrofacetDensity,
-                self._DensityRandomization,
+                randX,  
+                self._LogMicrofacetDensity.unsqueeze(-1),
+                self._DensityRandomization.unsqueeze(-1),
             ),
             0.0,
             50.0,
         )  # (4, n, 3)
-
         microfacetCount = torch.clamp(
-            footprintAreas * torch.exp(logDensityRand), min=self.EPSILON
+            footprintAreas.unsqueeze(-1) * torch.exp(logDensityRand), min=self.EPSILON
+        )  # (4, n, 3)
+        microfacetCountBlended = torch.clamp(
+            microfacetCount * torch.unsqueeze(gridWeights.T, -1), min=self.EPSILON
         )  # (4, n, 3)
 
         # Compute binomial properties
+        # probability of hitting desired half vector in NDF distribution
         hitProba = torch.clamp(
-            self._MicrofacetRoughness * targetNDF, 0.0, 1.0
-        )  # probability of hitting desired half vector in NDF distribution0
-        # torch.unsqueeze(gridWeights.T, -1) has shape (4, n, 1)
-        microfacetCountBlended = torch.clamp(
-            microfacetCount * torch.unsqueeze(gridWeights.T, -1), min=0.0
-        )  # (4, n, 3)
-        footprintOneHitProba = (
-            1.0 - (1.0 - hitProba).unsqueeze(-1) ** microfacetCountBlended
-        )  # probability of hitting at least one microfacet in footprint
-
-        footprintMean = (microfacetCountBlended - 1.0) * hitProba.unsqueeze(
-            -1
-        )  # Expected value of number of hits in the footprint given already one hit
+            self._MicrofacetRoughness * targetNDF, self.EPSILON, 1.0
+        )  
+        # probability of hitting at least one microfacet in footprint
+        footprintOneHitProba = 1.0 - torch.pow((1.0 - hitProba).unsqueeze(-1), microfacetCountBlended)
+        # Expected value of number of hits in the footprint given already one hit
+        footprintMean = (microfacetCountBlended - 1.0) * hitProba.unsqueeze(-1)  
+        # Standard deviation of number of hits in the footprint given already one hit
         footprintSTD = torch.sqrt(
             torch.clamp(
                 footprintMean * (1.0 - hitProba.unsqueeze(-1)),
                 min=self.EPSILON,  # this can't be 0.0 otherwise it will produce invalid values during backpropagation
             )
-        )  # Standard deviation of number of hits in the footprint given already one hit
-
+        )  
         binomialSmoothWidth = (
             0.1
             * torch.clamp(footprintOneHitProba * 10, 0.0, 1.0)
@@ -214,23 +206,14 @@ class GlintBRDF:
         )  # (4, n, 3)
 
         # Generate numbers of reflecting microfacets
-        results = self.GenerateAngularBinomialValueForSurfaceCell(
-            randSlopesB,
-            randSlopesG,
-            slopeLerps,
-            footprintOneHitProba,
-            binomialSmoothWidth,
-            footprintMean,
-            footprintSTD,
-            microfacetCountBlended,
-        )  # (4, n, 3)
-
+        result0 = self.GenerateAngularBinomialValueForSurfaceCell(rand0SlopesB, rand0SlopesG, slopeLerp0, footprintOneHitProba[...,0], binomialSmoothWidth[...,0], footprintMean[...,0], footprintSTD[...,0], microfacetCountBlended[...,0])
+        result1 = self.GenerateAngularBinomialValueForSurfaceCell(rand1SlopesB, rand1SlopesG, slopeLerp1, footprintOneHitProba[...,1], binomialSmoothWidth[...,1], footprintMean[...,1], footprintSTD[...,1], microfacetCountBlended[...,1])
+        result2 = self.GenerateAngularBinomialValueForSurfaceCell(rand2SlopesB, rand2SlopesG, slopeLerp2, footprintOneHitProba[...,2], binomialSmoothWidth[...,2], footprintMean[...,2], footprintSTD[...,2], microfacetCountBlended[...,2])
+        
         # Interpolate result for glint grid cell
-        results = results / microfacetCount  # (4, n, 3)
-
-        res = torch.sum(results * barycentrics, dim=-1)
-
-        return res
+        results = torch.stack((result0, result1, result2), dim=2) / microfacetCount # (4, n, 3)
+ 
+        return torch.sum(results * barycentrics, dim=-1)
     
     def GetAnisoCorrectingGridTetrahedron(self, center_special_case, theta_bin_lerp, ratio_lerp, lod_lerp):
         n = center_special_case.shape[0]
@@ -323,6 +306,12 @@ class GlintBRDF:
 
         # Stack results to get shape (4, n, 3)
         return torch.stack([p0, p1, p2, p3], dim=0)
+    
+    def calculate_grid_seeds(self, divLods, thetaBins, ratios):
+        tmp = torch.stack([divLods, thetaBins, ratios], dim=-1)
+
+        # The results are supposed to be unit while HashWithoutSine13 returns a float
+        return torch.clamp(torch.trunc(HashWithoutSine13(tmp) * 4294967296.0), min=0.0, max=4294967295.0)
 
     def sample_glints(self, localHalfVector, uv, duvdx, duvdy):
         ellipseMajor, ellipseMinor = GetGradientEllipse(duvdx, duvdy)
@@ -335,7 +324,6 @@ class GlintBRDF:
         # SHARED GLINT NDF VALUES
         halfScreenSpaceScaler = self._ScreenSpaceScale * 0.5
         slope = localHalfVector[..., :2]  # Orthogrtaphic slope projected grid
-        print('slope: ', slope.shape)
         rescaledTargetNDF = self.targetNDF / max(self.maxNDF, self.EPSILON)
 
         # MANUAL LOD COMPENSATION
@@ -347,7 +335,6 @@ class GlintBRDF:
         lodLerp = torch.frac(lod)
         footprintAreaLOD0 = torch.pow(torch.exp2(lod0), 2.0)
         footprintAreaLOD1 = torch.pow(torch.exp2(lod1), 2.0)
-        print('footprintAreaLOD: ', footprintAreaLOD0.shape) # n*n
 
         # MANUAL ANISOTROPY RATIO COMPENSATION
         ratio0 = torch.clamp(torch.pow(2.0, toIntApprox(torch.log2(ellipseRatio))), min=1.0)
@@ -356,12 +343,11 @@ class GlintBRDF:
 
         # MANUAL ANISOTROPY ROTATION COMPENSATION
         v2 = torch.nn.functional.normalize(ellipseMajor, dim=-1)
-        theta = (
+        theta = torch.rad2deg(
             torch.atan2(
                 -v2[..., 0],
                 v2[..., 1],
             )
-            * self.RAD2DEG
         )
         thetaGrid = 90.0 / torch.clamp(ratio0, min=2.0)
         thetaBin = toIntApprox(theta / thetaGrid) * thetaGrid
@@ -373,19 +359,18 @@ class GlintBRDF:
         thetaBin0 = torch.where(thetaBin0 <= 0.0, 180.0 + thetaBin0, thetaBin0)
 
         # TETRAHEDRONIZATION OF ROTATION + RATIO + LOD GRID
-        # centerSpecialCase = torch.where(ratio0 == 1.0, ratio0, self.ZERO)
-        centerSpecialCase = ratio0 == 1.0
+        centerSpecialCase = ratio0 == 1.0 # Note that gradients will not flow through ratio0
         divLods = torch.stack((divLod0, divLod1), dim=-1)
         footprintAreas = torch.stack((footprintAreaLOD0, footprintAreaLOD1), dim=-1)
         ratios = torch.stack((ratio0, ratio1), dim=-1)
         thetaBins = torch.stack(
             (thetaBin0, thetaBinH, thetaBin1, torch.zeros(thetaBin0.shape).to("cuda")),
             dim=-1,
-        )  # added 0.0 for center singularity case
+        )  # added 0.0 for center singularity case, shape (n, 4)
         tetras = self.GetAnisoCorrectingGridTetrahedron(
             centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp
         )
-        print('tetras: ', tetras.shape)
+     
         # Account for center singularity in barycentric computation
         thetaBinLerp = torch.where(
             centerSpecialCase,
@@ -395,7 +380,6 @@ class GlintBRDF:
         tetraBarycentricWeights = GetBarycentricWeightsTetrahedron(
             torch.stack((thetaBinLerp, ratioLerp, lodLerp), dim=-1), tetras
         )  # Compute barycentric coordinates within chosen tetrahedron
-        print('tetraBarycentricWeights: ', tetraBarycentricWeights.shape)
 
         # PREPARE NEEDED ROTATIONS
         tetras[..., 0] *= 2
@@ -404,69 +388,64 @@ class GlintBRDF:
             torch.where(tetras[..., 1] == 0.0, 3.0, tetras[..., 0]),
             tetras[..., 0],
         )
+        
+        # Get the selected thetaBins
+        thetaBins_edges = torch.tensor([0, 1, 2, 3], device='cuda', dtype=torch.float32).view(1, 1, 4)
+        thetaBins_idx = torch.nn.functional.gumbel_softmax(
+                thetaBins_edges - tetras[...,0].unsqueeze(2),
+                tau=0.5,
+                hard=True
+            ) # (4, n, 4)
+        thetaBins_selected = torch.zeros(4, thetaBins.shape[0], device=thetaBins.device)
+        for i in range(4):
+            # Use for loop to optimise memory usage
+            # Multiply tensor1 with the corresponding slice of tensor2 and sum over the last dimension
+            thetaBins_selected[i] = torch.sum(thetaBins.unsqueeze(0) * thetaBins_idx[i], dim=-1)
 
+        # Get the selected divLods
+        binary_edges = torch.tensor([0, 1], device='cuda', dtype=torch.float32).view(1, 1, 2)
+        divLods_idx = torch.nn.functional.gumbel_softmax(
+                binary_edges - tetras[...,2].unsqueeze(2),
+                tau=0.5,
+                hard=True
+            ) # (4, n, 2)
+        divLods_selected = torch.einsum('ij,kij->ki', divLods, divLods_idx)
+        
+        # Get the selected ratios
+        ratios_dix = torch.nn.functional.gumbel_softmax(
+                binary_edges - tetras[...,1].unsqueeze(2),
+                tau=0.5,
+                hard=True
+            ) # (4, n, 2)
+        ratios_selected = torch.einsum('ij,kij->ki', ratios, ratios_dix)
+        
+        # Get the selected footprintAreas
+        footprintAreas_idx = torch.nn.functional.gumbel_softmax(
+            binary_edges - tetras[...,2].unsqueeze(2),
+            tau=0.5,
+            hard=True
+        )
+        footprintAreas_selected = torch.einsum('ij,kij->ki', footprintAreas, footprintAreas_idx)
+        
         # selections based on tetra values
-        thetaBins_tetras = torch.gather(
-            thetaBins[None,].repeat(4, 1, 1),
-            dim=-1,
-            index=tetras[..., 0].unsqueeze(-1).to(torch.int64),
-        )
-        divLods_tetras = torch.gather(
-            divLods[None,].repeat(4, 1, 1),
-            dim=-1,
-            index=tetras[..., 2].unsqueeze(-1).to(torch.int64),
-        )
-        ratios_tetras = torch.gather(
-            ratios[None,].repeat(4, 1, 1),
-            dim=-1,
-            index=tetras[..., 1].unsqueeze(-1).to(torch.int64),
-        )
-        footprintAreas_tetras = torch.gather(
-            footprintAreas[None,].repeat(4, 1, 1),
-            dim=-1,
-            index=tetras[..., 2].unsqueeze(-1).to(torch.int64),
-        )
-
-        uvRots = RotateUV(uv, thetaBins_tetras * self.DEG2RAD, torch.full((2,), 0.0))
-
-        # note that modulo is not differentiable
-        gridSeeds = (
-            normalise_to(
-                HashWithoutSine13(
-                    torch.cat(
-                        (divLods_tetras, thetaBins_tetras % 360, ratios_tetras), dim=-1
-                    )
-                )
-                + HashWithoutSine13(self.noise_3d).repeat(1, self.batch_size, 1),
-                0.0,
-                1.0,
-            )
-            * 4294967296.0  # 2**32
-        )  # (4, n, 1)
+        uvRots = RotateUV(uv, torch.deg2rad(thetaBins_selected))
+        thetaBins_selected_mod = torch.remainder(thetaBins_selected, 360)
+        gridSeeds = self.calculate_grid_seeds(torch.log2(divLods_selected), thetaBins_selected_mod, ratios_selected)
 
         # SAMPLE GLINT GRIDS
+        ratios_selected_reshaped = ratios_selected.unsqueeze(-1)
+        denom = (torch.cat((torch.ones(ratios_selected_reshaped.shape, device='cuda'), ratios_selected_reshaped), dim=-1) + self.EPSILON)
+        final_uv = uvRots / (divLods_selected + self.EPSILON).unsqueeze(-1) / denom
         samples = self.SampleGlintGridSimplex(
-            uvRots
-            / remove_zeros(divLods_tetras)
-            / remove_zeros(
-                torch.cat(
-                    (torch.ones(ratios_tetras.shape).to("cuda"), ratios_tetras), dim=-1
-                )
-            ),
+            final_uv,
             gridSeeds,
             slope,
-            ratios_tetras * footprintAreas_tetras,
+            ratios_selected * footprintAreas_selected,
             rescaledTargetNDF,
-            tetraBarycentricWeights,
-        )  # (4, n, 1) or equivalently (4, n). For simplicity the latter is used.
-
-        res = (
-            torch.sum(samples, dim=0)
-            * (1.0 / torch.clamp(self._MicrofacetRoughness, self.EPSILON))
-            * self.maxNDF
+            tetraBarycentricWeights
         )
 
-        res = torch.clamp(res, min=0.0)
+        res = torch.sum(samples, dim=0) * (1.0 / torch.clamp(self._MicrofacetRoughness, self.EPSILON)) * self.maxNDF
 
         assert is_valid(res)
         return res

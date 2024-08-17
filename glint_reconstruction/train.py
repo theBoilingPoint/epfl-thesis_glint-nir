@@ -39,6 +39,7 @@ from render import mlptexture
 from render import light
 from render import render
 
+from render.renderutils.glint_brdf.glint_utils import PCG3dFloat
 from render.renderutils.glint_brdf.params_estimator import get_stats_of_obj
 
 RADIUS = 3.0
@@ -682,17 +683,6 @@ def optimize_mesh(
     return geometry, opt_material
 
 
-def load_tetra_noises(path, FLAGS):
-    lst = []
-    for noise_map in os.listdir(path):
-        if noise_map.startswith(f"rand_3d_{FLAGS.train_res[0]}"):
-            map_path = os.path.join(path, noise_map)
-            noise = imageio.v3.imread(map_path).reshape(-1, 3)
-            lst.append(noise)
-
-    return torch.tensor(lst, dtype=torch.float32, device="cuda")
-
-
 # ----------------------------------------------------------------------------
 # Main function.
 # ----------------------------------------------------------------------------
@@ -732,6 +722,7 @@ if __name__ == "__main__":
 
     FLAGS = parser.parse_args()
 
+    FLAGS.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     FLAGS.mtl_override = None  # Override material of model
     FLAGS.dmtet_grid = 64  # Resolution of initial tet grid. We provide 64 and 128 resolution grids. Other resolutions can be generated with https://github.com/crawforddoran/quartet
     FLAGS.mesh_scale = 2.1  # Scale of tet grid box. Adjust to cover the model
@@ -824,6 +815,7 @@ if __name__ == "__main__":
         lgt = light.load_env(FLAGS.envmap, scale=FLAGS.env_scale)
 
     if FLAGS.base_mesh is None:
+        print("No base mesh provided.")
         # ==============================================================================================
         #  If no initial guess, use DMtets to create geometry
         # ==============================================================================================
@@ -903,6 +895,7 @@ if __name__ == "__main__":
         )
 
     else:
+        print("Base mesh provided.")
         # ==============================================================================================
         #  Train with fixed topology (mesh)
         # ==============================================================================================
@@ -956,21 +949,20 @@ if __name__ == "__main__":
     # ==============================================================================================
     #  Pass 3: Train specular params with fixed geometry, lighting, and albedo texture.
     # ==============================================================================================
-    mat["glint_params"] = get_stats_of_obj(FLAGS.ref_mesh)
-    mat["glint_3d_noise"] = load_tetra_noises(
-        "./render/renderutils/glint_brdf/noise_maps", FLAGS
-    )
-    mat["glint_4d_noise"] = torch.tensor(
-        imageio.v3.imread("./render/renderutils/glint_brdf/noise_maps/rand_4d_800.exr"),
-        dtype=torch.float32,
-        device="cuda",
-    )
-
-    assert mat["glint_3d_noise"].shape == (
-        4,
-        FLAGS.train_res[0] * FLAGS.train_res[1],
-        3,
-    ) and mat["glint_4d_noise"].shape == (FLAGS.train_res[0], FLAGS.train_res[1], 4)
+    print("Glint pass started.")
+    # mat["glint_params"] = get_stats_of_obj(FLAGS.ref_mesh)
+    mat["glint_params"] = torch.rand(3, device=FLAGS.device, requires_grad=True)
+    # mat["glint_4d_noise"] = torch.tensor(
+    #     imageio.v3.imread("./render/renderutils/glint_brdf/noise_maps/rand_4d_800.exr"),
+    #     dtype=torch.float32,
+    #     device=FLAGS.device,
+    # )
+    mat["glint_4d_noise"] = torch.rand(800, 800, 4, device=FLAGS.device, requires_grad=True)
+    pcg3d = PCG3dFloat(3,3).to(FLAGS.device)
+    pcg3d.load_state_dict(torch.load("./render/renderutils/glint_brdf/weights/model_state_dict.pth"))
+    for param in pcg3d.parameters():
+        param.requires_grad = False
+    mat["glint_pcg3d"] = pcg3d
 
     geometry, mat = optimize_mesh(
         glctx,

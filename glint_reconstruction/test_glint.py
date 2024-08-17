@@ -1,6 +1,8 @@
-import torch
 import os
 from dataclasses import dataclass
+
+import torch
+import torch.nn as nn
 import nvdiffrast.torch as dr
 
 from dataset.dataset_nerf import DatasetNERF
@@ -9,6 +11,8 @@ from train import prepare_batch, validate_itr
 from geometry.dlmesh import DLMesh
 from render import mesh, util, light, texture
 
+use_cuda = torch.cuda.is_available()
+device = torch.device('cuda') if use_cuda else torch.device('cpu')
 
 @dataclass
 class FLAGS:
@@ -19,6 +23,7 @@ class FLAGS:
     geometry: str
     material: str
     envmap: str
+    pcg3d:str
     dataset_path: str  # path to the data root folder where you have transforms_train.json and transforms_{phase}.json files
     cam_pos_script: str  # name of the camera position script
     out_dir: str  # path to the output folder
@@ -35,7 +40,7 @@ class FLAGS:
     mesh_scale = 2.1
     laplace_scale = 3000
     display = [{"latlong": True}, {"bsdf": "kd"}, {"bsdf": "ks"}, {"bsdf": "normal"}]
-    background = "white"
+    background = "reference"
 
     """
 	Values that don't matter.
@@ -67,11 +72,12 @@ class FLAGS:
     multi_gpu = False
 
     def __init__(
-        self, geometry, material, envmap, dataset_path, cam_pos_script, out_dir
+        self, geometry, material, envmap, pcg3d, dataset_path, cam_pos_script, out_dir
     ):
         self.geometry = geometry
         self.material = material
         self.envmap = envmap
+        self.pcg3d = pcg3d
         self.dataset_path = dataset_path
         self.cam_pos_script = cam_pos_script
         self.out_dir = out_dir
@@ -90,6 +96,7 @@ def load_models(FLAGS):
     geometry_file = FLAGS.geometry
     lgt_file = FLAGS.envmap
     mat_file = FLAGS.material
+    pcg3d_file = FLAGS.pcg3d
 
     if geometry_file.endswith('.obj'):
         base_mesh = mesh.load_mesh(geometry_file)
@@ -112,13 +119,18 @@ def load_models(FLAGS):
         }
     else:
         mat_tmp = torch.load(FLAGS.material)
+        pcg3dFloat = PCG3dFloat(3,3).to(device)
+        pcg3dFloat.load_state_dict(torch.load(pcg3d_file))
+        for param in pcg3dFloat.parameters():
+            param.requires_grad = False
+            
         mat = {
             'name' : '_default_mat',
             'bsdf' : 'pbr',
             'kd'   : texture.Texture2D(torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32, device='cuda')),
             'ks'   : texture.Texture2D(torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device='cuda')),
             'glint_params': mat_tmp['glint_params'],
-            'glint_3d_noise': mat_tmp['glint_3d_noise'],
+            'glint_pcg3d': pcg3dFloat,
             'glint_4d_noise': mat_tmp['glint_4d_noise']
         }
         # mat = torch.load(FLAGS.material)
@@ -127,6 +139,31 @@ def load_models(FLAGS):
         )
 
     return geometry, mat, lgt
+
+class PCG3dFloat(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(PCG3dFloat, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.LeakyReLU(0.01),
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.01),
+            nn.Linear(512, 1024),
+            nn.LeakyReLU(0.01),
+            nn.Linear(1024, 512),
+            nn.LeakyReLU(0.01),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.01),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.01),
+            nn.Linear(128, output_size),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        x = self.model(x)
+
+        return x
 
 
 if __name__ == "__main__":
@@ -157,6 +194,7 @@ if __name__ == "__main__":
         os.path.join(output_root_folder, geometry_model_name),
         os.path.join(output_root_folder, material_model_name),
         os.path.join(output_root_folder, light_model_name),
+        os.path.join(output_root_folder, 'model_state_dict.pth'),
         f"data/{obj}_{env_map}",  # match this with the dataset folder
         "transforms_test.json",  # match this with the camera pose script you want to use for the dataset you select above
         os.path.join(output_root_folder, env_map),
