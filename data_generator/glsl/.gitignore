@@ -1,0 +1,5 @@
+*.pro.user
+build-*
+Desktop_Qt_6_2_2_MinGW_64_bit-Debug/
+
+.DS_Store
