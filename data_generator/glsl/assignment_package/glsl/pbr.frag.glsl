@@ -42,9 +42,8 @@ const float DEG2RAD = 0.01745329251;
 const float RAD2DEG = 57.2957795131;
 
 const bool useGlint = true;
-const float _ScreenSpaceScale = 2.5;
-const float _LogMicrofacetDensity = 10.0;
-const float _MicrofacetRoughness = 0.5;
+const float _ScreenSpaceScale = 1.5;
+const float _LogMicrofacetDensity = 40.0;
 const float _DensityRandomization = 10.0;
 
 //=======================================================================================
@@ -249,10 +248,10 @@ void UnpackFloatParallel4(vec4 input, out vec4 a, out vec4 b)
 //=======================================================================================
 // GLINTS TEST NOVEMBER 2022
 //=======================================================================================
-void CustomRand4Texture(vec2 slope, vec2 slopeRandOffset, out vec4 outUniform, out vec4 outGaussian, out vec2 slopeLerp)
+void CustomRand4Texture(float roughness, vec2 slope, vec2 slopeRandOffset, out vec4 outUniform, out vec4 outGaussian, out vec2 slopeLerp)
 {
     ivec2 size = ivec2(_Glint2023NoiseMapSize);
-    vec2 slope2 = abs(slope) / _MicrofacetRoughness;
+    vec2 slope2 = abs(slope) / roughness;
     slope2 = slope2 + (slopeRandOffset * vec2(size));
     slopeLerp = fract(slope2);
     ivec2 slopeCoord = ivec2(floor(slope2)) % size;
@@ -276,7 +275,7 @@ float GenerateAngularBinomialValueForSurfaceCell(vec4 randB, vec4 randG, vec2 sl
     return result;
 }
 
-float SampleGlintGridSimplex(vec2 uv, uint gridSeed, vec2 slope, float footprintArea, float targetNDF, float gridWeight)
+float SampleGlintGridSimplex(float roughness, vec2 uv, uint gridSeed, vec2 slope, float footprintArea, float targetNDF, float gridWeight)
 {
     // Get surface space glint simplex grid cell
     const mat2 gridToSkewedGrid = mat2(1.0, -0.57735027, 0.0, 1.15470054);
@@ -299,9 +298,9 @@ float SampleGlintGridSimplex(vec2 uv, uint gridSeed, vec2 slope, float footprint
     // Get per surface cell per slope cell random numbers
     vec4 rand0SlopesB, rand1SlopesB, rand2SlopesB, rand0SlopesG, rand1SlopesG, rand2SlopesG;
     vec2 slopeLerp0, slopeLerp1, slopeLerp2;
-    CustomRand4Texture(slope, rand0.yz, rand0SlopesB, rand0SlopesG, slopeLerp0);
-    CustomRand4Texture(slope, rand1.yz, rand1SlopesB, rand1SlopesG, slopeLerp1);
-    CustomRand4Texture(slope, rand2.yz, rand2SlopesB, rand2SlopesG, slopeLerp2);
+    CustomRand4Texture(roughness, slope, rand0.yz, rand0SlopesB, rand0SlopesG, slopeLerp0);
+    CustomRand4Texture(roughness, slope, rand1.yz, rand1SlopesB, rand1SlopesG, slopeLerp1);
+    CustomRand4Texture(roughness, slope, rand2.yz, rand2SlopesB, rand2SlopesG, slopeLerp2);
 
     // Compute microfacet count with randomization
     vec3 logDensityRand = clamp(sampleNormalDistribution(vec3(rand0.x, rand1.x, rand2.x), _LogMicrofacetDensity, _DensityRandomization), 0.0, 50.0); // TODO : optimize sampleNormalDist
@@ -309,7 +308,7 @@ float SampleGlintGridSimplex(vec2 uv, uint gridSeed, vec2 slope, float footprint
     vec3 microfacetCountBlended = microfacetCount * gridWeight;
 
     // Compute binomial properties
-    float hitProba = _MicrofacetRoughness * targetNDF; // probability of hitting desired half vector in NDF distribution
+    float hitProba = roughness * targetNDF; // probability of hitting desired half vector in NDF distribution
     vec3 footprintOneHitProba = (1.0 - pow(vec3(1.0 - hitProba), microfacetCountBlended)); // probability of hitting at least one microfacet in footprint
     vec3 footprintMean = (microfacetCountBlended - 1.0) * hitProba; // Expected value of number of hits in the footprint given already one hit
     vec3 footprintSTD = sqrt((microfacetCountBlended - 1.0) * hitProba * (1.0 - hitProba)); // Standard deviation of number of hits in the footprint given already one hit
@@ -422,7 +421,7 @@ void GetAnisoCorrectingGridTetrahedron(bool centerSpecialCase, inout float theta
     }
 }
 
-vec4 SampleGlints2023NDF(vec3 localHalfVector, float targetNDF, float maxNDF, vec2 uv, vec2 duvdx, vec2 duvdy)
+vec4 SampleGlints2023NDF(float roughness, vec3 localHalfVector, float targetNDF, float maxNDF, vec2 uv, vec2 duvdx, vec2 duvdy)
 {
     // ACCURATE PIXEL FOOTPRINT ELLIPSE
     vec2 ellipseMajor, ellipseMinor;
@@ -494,11 +493,11 @@ vec4 SampleGlints2023NDF(vec3 localHalfVector, float targetNDF, float maxNDF, ve
     uint gridSeedB = uint(HashWithoutSine13(vec3(log2(divLods[int(tetraB.z)]), mod(thetaBins[int(tetraB.x)], 360.0), ratios[int(tetraB.y)])) * 4294967296.0);
     uint gridSeedC = uint(HashWithoutSine13(vec3(log2(divLods[int(tetraC.z)]), mod(thetaBins[int(tetraC.x)], 360.0), ratios[int(tetraC.y)])) * 4294967296.0);
     uint gridSeedD = uint(HashWithoutSine13(vec3(log2(divLods[int(tetraD.z)]), mod(thetaBins[int(tetraD.x)], 360.0), ratios[int(tetraD.y)])) * 4294967296.0);
-    float sampleA = SampleGlintGridSimplex(uvRotA / divLods[int(tetraA.z)] / vec2(1.0, ratios[int(tetraA.y)]), gridSeedA, slope, ratios[int(tetraA.y)] * footprintAreas[int(tetraA.z)], rescaledTargetNDF, tetraBarycentricWeights.x);
-    float sampleB = SampleGlintGridSimplex(uvRotB / divLods[int(tetraB.z)] / vec2(1.0, ratios[int(tetraB.y)]), gridSeedB, slope, ratios[int(tetraB.y)] * footprintAreas[int(tetraB.z)], rescaledTargetNDF, tetraBarycentricWeights.y);
-    float sampleC = SampleGlintGridSimplex(uvRotC / divLods[int(tetraC.z)] / vec2(1.0, ratios[int(tetraC.y)]), gridSeedC, slope, ratios[int(tetraC.y)] * footprintAreas[int(tetraC.z)], rescaledTargetNDF, tetraBarycentricWeights.z);
-    float sampleD = SampleGlintGridSimplex(uvRotD / divLods[int(tetraD.z)] / vec2(1.0, ratios[int(tetraD.y)]), gridSeedD, slope, ratios[int(tetraD.y)] * footprintAreas[int(tetraD.z)], rescaledTargetNDF, tetraBarycentricWeights.w);
-    return vec4((sampleA + sampleB + sampleC + sampleD) * (1.0 / _MicrofacetRoughness) * maxNDF);
+    float sampleA = SampleGlintGridSimplex(roughness, uvRotA / divLods[int(tetraA.z)] / vec2(1.0, ratios[int(tetraA.y)]), gridSeedA, slope, ratios[int(tetraA.y)] * footprintAreas[int(tetraA.z)], rescaledTargetNDF, tetraBarycentricWeights.x);
+    float sampleB = SampleGlintGridSimplex(roughness,uvRotB / divLods[int(tetraB.z)] / vec2(1.0, ratios[int(tetraB.y)]), gridSeedB, slope, ratios[int(tetraB.y)] * footprintAreas[int(tetraB.z)], rescaledTargetNDF, tetraBarycentricWeights.y);
+    float sampleC = SampleGlintGridSimplex(roughness,uvRotC / divLods[int(tetraC.z)] / vec2(1.0, ratios[int(tetraC.y)]), gridSeedC, slope, ratios[int(tetraC.y)] * footprintAreas[int(tetraC.z)], rescaledTargetNDF, tetraBarycentricWeights.z);
+    float sampleD = SampleGlintGridSimplex(roughness,uvRotD / divLods[int(tetraD.z)] / vec2(1.0, ratios[int(tetraD.y)]), gridSeedD, slope, ratios[int(tetraD.y)] * footprintAreas[int(tetraD.z)], rescaledTargetNDF, tetraBarycentricWeights.w);
+    return vec4((sampleA + sampleB + sampleC + sampleD) * (1.0 / roughness) * maxNDF);
 }
 
 void main()
@@ -539,7 +538,7 @@ void main()
 
     vec3 specular;
     if (useGlint) {
-        specular = Li * SampleGlints2023NDF(wh, 0.5, 1.0, fs_UV, dFdx(fs_UV), dFdy(fs_UV)).rgb;
+        specular = Li * SampleGlints2023NDF(roughness, wh, 0.5, 1.0, fs_UV, dFdx(fs_UV), dFdy(fs_UV)).rgb;
     }
     else {
         // The BRDF part of the split sum approximation.

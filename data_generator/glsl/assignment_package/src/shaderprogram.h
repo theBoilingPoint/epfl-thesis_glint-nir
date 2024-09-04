@@ -49,6 +49,7 @@ public:
     void setUnifVec3(std::string name, const glm::vec3 &v);
     void setUnifFloat(std::string name, float f);
     void setUnifInt(std::string name, int i);
+    void setUnifUint(std::string name, unsigned int i);
 
 #if 0
     // Pass the given model matrix to this shader on the GPU

@@ -6,24 +6,6 @@
 #define mkU std::make_unique
 #define uPtr std::unique_ptr
 
-enum class GBufferOutputType : unsigned int {
-    POSITION_WORLD,   // stores world-space position
-    NORMAL,           // stores world-space normal
-    ALBEDO,           // stores material albedo
-    METAL_ROUGH_MASK, // stores metallic, roughness, and geom mask as RGB channels
-    PBR,              // stores PBR shader LTE output
-    SSR,              // stores the screen-space reflection of the scene
-    SSR_BLUR0,        // first level of blurred glossy reflection
-    SSR_BLUR1,        // second level of blurred glossy reflection
-    SSR_BLUR2,        // third level of blurred glossy reflection
-    SSR_BLUR3,        // fourth level of blurred glossy reflection
-    NONE,          // Used for cube map, which doesn't output to G buffer
-    DOF, // stores the depth of field params (i.e. distance to the focal plane)
-    PREPROCESSED_PBR, // stores the preprocessed PBR texture
-    BLURRED_PBR, // stores the blurred PBR texture
-    GLINT_NOISE // stores the glint noise texture
-};
-
 // A class representing a frame buffer in the OpenGL pipeline.
 // Stores three GPU handles: one to a frame buffer object, one to
 // a texture object that will store the frame buffer's contents,
@@ -39,7 +21,6 @@ protected:
     OpenGLContext *mp_context;
     GLuint m_frameBuffer;
     GLuint m_depthRenderBuffer;
-    std::unordered_map<GBufferOutputType, uPtr<Texture>> m_outputTextures;
 
     unsigned int m_width, m_height, m_devicePixelRatio;
     bool m_created;
@@ -58,7 +39,8 @@ public:
     void bindFrameBuffer();
     void bindRenderBuffer(unsigned int w, unsigned int h);
     // Associate our output texture with the indicated texture slot
-    virtual void bindToTextureSlot(unsigned int slot, GBufferOutputType tex);
+    // virtual void bindToTextureSlot(unsigned int slot, GBufferOutputType tex);
+    virtual void bindToTextureSlot(unsigned int slot) = 0;
     unsigned int getTextureSlot() const;
     inline unsigned int width() const {
         return m_width;
@@ -66,12 +48,6 @@ public:
     inline unsigned int height() const {
         return m_height;
     }
-
-    // Append a Texture to receive the next-lowest unused
-    // GL_COLOR_ATTACHMENT as data.
-    void addTexture(GBufferOutputType a);
-
-    std::unordered_map<GBufferOutputType, uPtr<Texture>> &getOutputTextures();
 };
 
 class CubeMapFrameBuffer : public FrameBuffer {
@@ -88,4 +64,18 @@ public:
     unsigned int getCubemapHandle() const;
 
     void generateMipMaps();
+};
+
+class FrameBuffer2D : public FrameBuffer { 
+protected:
+    unsigned int m_outputTexture;
+
+public:
+    FrameBuffer2D(OpenGLContext *context, unsigned int width, unsigned int height, unsigned int devicePixelRatio);
+
+    void create(bool mipmap = false) override;
+    void destroy() override;
+    void bindToTextureSlot(unsigned int slot);
+
+    unsigned int getTextureHandle() const;
 };

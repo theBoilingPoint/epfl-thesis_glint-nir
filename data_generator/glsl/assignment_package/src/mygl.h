@@ -54,7 +54,7 @@ private:
     // Used for the split-sum approximation of glossy reflection
     Texture2D m_brdfLookupTexture;
     // Used for glints
-    FrameBuffer m_glintNoiseFB;
+    FrameBuffer2D m_glintNoiseFB;
 
     ShaderProgram m_progPBR;
     ShaderProgram m_progCubemapConversion;

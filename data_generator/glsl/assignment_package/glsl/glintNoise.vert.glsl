@@ -13,4 +13,6 @@ void main()
 {
     fs_Pos = (u_ViewProj * u_Model * vec4(vs_Pos, 1.0)).xyz;
     fs_UV = vs_UV;
+
+    gl_Position =  u_ViewProj * vec4(fs_Pos, 1.0);
 }

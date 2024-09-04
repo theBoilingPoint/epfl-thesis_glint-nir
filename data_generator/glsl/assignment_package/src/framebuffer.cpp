@@ -4,7 +4,7 @@
 FrameBuffer::FrameBuffer(OpenGLContext *context,
                          unsigned int width, unsigned int height, unsigned int devicePixelRatio)
     : mp_context(context), m_frameBuffer(-1),
-      /*m_outputTexture(-1), */m_depthRenderBuffer(-1),
+      m_depthRenderBuffer(-1),
       m_width(width), m_height(height), m_devicePixelRatio(devicePixelRatio), m_created(false)
 {}
 
@@ -59,87 +59,8 @@ void FrameBuffer::bindRenderBuffer(unsigned int w, unsigned int h) {
     mp_context->glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w * m_devicePixelRatio, h * m_devicePixelRatio);
 }
 
-void FrameBuffer::bindToTextureSlot(unsigned int slot,
-                                    GBufferOutputType tex) {
-    m_textureSlot = slot;
-    m_outputTextures.at(tex)->bind(slot);
-}
-
 unsigned int FrameBuffer::getTextureSlot() const {
     return m_textureSlot;
-}
-
-void FrameBuffer::addTexture(GBufferOutputType a) {
-    uPtr<Texture> t;
-    switch(a) {
-    case GBufferOutputType::POSITION_WORLD:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA32F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::NORMAL:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::ALBEDO:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE);
-        break;
-    case GBufferOutputType::METAL_ROUGH_MASK:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA, GL_RGBA, GL_UNSIGNED_BYTE);
-        break;
-    case GBufferOutputType::PBR:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::DOF:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::SSR:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::SSR_BLUR0:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::SSR_BLUR1:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::SSR_BLUR2:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::SSR_BLUR3:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::PREPROCESSED_PBR:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::BLURRED_PBR:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA16F, GL_RGBA, GL_FLOAT);
-        break;
-    case GBufferOutputType::GLINT_NOISE:
-        t = mkU<Texture>(mp_context);
-        t->create(GL_RGBA32F, GL_RGBA, GL_FLOAT);
-        break;
-    default:
-        throw std::invalid_argument("Invalid GBufferOutputType!");
-        break;
-    }
-    t->bufferPixelData(m_width * m_devicePixelRatio,
-                       m_height * m_devicePixelRatio,
-                       nullptr);
-    m_outputTextures[a] = std::move(t);
-}
-
-std::unordered_map<GBufferOutputType, uPtr<Texture>> &FrameBuffer::getOutputTextures() {
-    return m_outputTextures;
 }
 
 CubeMapFrameBuffer::CubeMapFrameBuffer(OpenGLContext *context, unsigned int width, unsigned int height, unsigned int devicePixelRatio)
@@ -194,4 +115,55 @@ unsigned int CubeMapFrameBuffer::getCubemapHandle() const {
 void CubeMapFrameBuffer::generateMipMaps() {
     mp_context->glBindTexture(GL_TEXTURE_CUBE_MAP, m_outputCubeMap);
     mp_context->glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+}
+
+FrameBuffer2D::FrameBuffer2D(OpenGLContext *context,
+                             unsigned int width, unsigned int height, unsigned int devicePixelRatio)
+    : FrameBuffer(context, width, height, devicePixelRatio)
+{}
+
+void FrameBuffer2D::create(bool mipmap) {
+    FrameBuffer::create();
+
+    mp_context->glGenTextures(1, &m_outputTexture);
+    // bind a named texture to a texturing target
+    mp_context->glBindTexture(GL_TEXTURE_2D, m_outputTexture);
+
+    // specify a two-dimensional texture image
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F,
+                     m_width, m_height, 0, GL_RGBA, GL_FLOAT, nullptr);
+
+    mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+
+    if(mipmap) {
+        mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    }
+    else {
+        mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    }
+    mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    if(mipmap) {
+        mp_context->glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
+    }
+}
+
+void FrameBuffer2D::destroy() {
+    if(m_created) {
+        mp_context->glDeleteTextures(1, &m_outputTexture);
+    }
+    m_outputTexture = -1;
+    FrameBuffer::destroy();
+}
+
+void FrameBuffer2D::bindToTextureSlot(unsigned int slot) {
+    m_textureSlot = slot;
+    mp_context->glActiveTexture(GL_TEXTURE0 + slot);
+    mp_context->glBindTexture(GL_TEXTURE_2D, m_outputTexture);
+}
+
+unsigned int FrameBuffer2D::getTextureHandle() const {
+    return m_outputTexture;
 }

@@ -96,6 +96,7 @@ void ShaderProgram::setUnifVec3(std::string name, const glm::vec3 &v) {
         std::cout << "Error: could not find shader variable with name " << name << std::endl;
     }
 }
+
 void ShaderProgram::setUnifFloat(std::string name, float f) {
     useMe();
     try {
@@ -108,6 +109,7 @@ void ShaderProgram::setUnifFloat(std::string name, float f) {
         std::cout << "Error: could not find shader variable with name " << name << std::endl;
     }
 }
+
 void ShaderProgram::setUnifInt(std::string name, int i) {
     useMe();
     try {
@@ -120,6 +122,20 @@ void ShaderProgram::setUnifInt(std::string name, int i) {
         std::cout << "Error: could not find shader variable with name " << name << std::endl;
     }
 }
+
+void ShaderProgram::setUnifUint(std::string name, unsigned int i) {
+    useMe();
+    try {
+        int handle = m_unifs.at(name);
+        if(handle != -1) {
+            context->glUniform1ui(handle, i);
+        }
+    }
+    catch(std::out_of_range &e) {
+        std::cout << "Error: could not find shader variable with name " << name << std::endl;
+    }
+}
+
 //This function, as its name implies, uses the passed in GL widget
 void ShaderProgram::draw(Drawable &d)
 {
