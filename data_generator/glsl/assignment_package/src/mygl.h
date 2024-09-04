@@ -55,6 +55,7 @@ private:
     Texture2D m_brdfLookupTexture;
     // Used for glints
     FrameBuffer2D m_glintNoiseFB;
+    FrameBuffer2D m_outputFB;
 
     ShaderProgram m_progPBR;
     ShaderProgram m_progCubemapConversion;
@@ -97,6 +98,7 @@ protected:
     void renderConvolvedGlossyCubeMapToTexture();
     void renderEnvironmentMap();
     void renderGlintNoiseToTexture(unsigned int size, unsigned int seed);
+    void renderCurrentSceneToTexture();
 
     void setupShaderHandles();
 
@@ -112,7 +114,11 @@ public slots:
     void slot_loadScene();
     void slot_loadOBJ();
     void slot_revertToSphere();
+    void slot_saveImage();
+    void slot_setUseGlint(bool);
+    void slot_setScreenSpaceScale(double);
+    void slot_setLogMicrofacetDensity(double);
+    void slot_setDensityRandomization(double);
 };
-
 
 #endif // MYGL_H

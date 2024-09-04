@@ -23,6 +23,12 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->sceneButton, SIGNAL(clicked()), ui->mygl, SLOT(slot_loadScene()));
     connect(ui->objButton, SIGNAL(clicked()), ui->mygl, SLOT(slot_loadOBJ()));
     connect(ui->sphereButton, SIGNAL(clicked()), ui->mygl, SLOT(slot_revertToSphere()));
+    connect(ui->saveImageButton, SIGNAL(clicked()), ui->mygl, SLOT(slot_saveImage()));
+
+    connect(ui->glintCheckBox, SIGNAL(clicked(bool)), ui->mygl, SLOT(slot_setUseGlint(bool)));
+    connect(ui->screenSpaceScaleSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setScreenSpaceScale(double)));
+    connect(ui->logMicrofacetDensitySpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setLogMicrofacetDensity(double)));
+    connect(ui->densityRandomizationSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setDensityRandomization(double)));
 }
 
 MainWindow::~MainWindow()

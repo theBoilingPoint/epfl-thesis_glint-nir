@@ -25,7 +25,9 @@ MyGL::MyGL(QWidget *parent)
       m_glossyIrradianceFB(this, 512, 512, 1.f),
       m_brdfLookupTexture(this),
       // TODO: for now the width and height are hardcoded. But it should be consistent with what's used in glintNoise.frag.glsl
-      m_glintNoiseFB(this, 512, 512, 1.f),
+      m_glintNoiseFB(this, 1024, 1024, 1.f),
+      m_outputFB(this, this->width(), this->height(),
+                     this->devicePixelRatio()),
       m_progPBR(this), m_progCubemapConversion(this),
       m_progCubemapDiffuseConvolution(this),
       m_progCubemapGlossyConvolution(this),
@@ -88,6 +90,7 @@ void MyGL::initializeGL()
     m_glossyIrradianceFB.create(true);
     m_brdfLookupTexture.create(":/textures/brdfLUT.png", false);
     m_glintNoiseFB.create();
+    m_outputFB.create();
 
     // We have to have a VAO bound in OpenGL 3.2 Core. But if we're not
     // using multiple VAOs, we can just bind one once.
@@ -169,7 +172,7 @@ void MyGL::paintGL() {
     // Load the glint noise texture
     m_glintNoiseFB.bindToTextureSlot(GLINT_NOISE_TEX_SLOT);
     m_progPBR.setUnifInt("u_GlintNoiseTexture", GLINT_NOISE_TEX_SLOT);
-    m_progPBR.setUnifInt("_Glint2023NoiseMapSize", (int)m_glintNoiseFB.width());
+    m_progPBR.setUnifUint("_Glint2023NoiseMapSize", m_glintNoiseFB.width());
 
     if(m_textureAlbedo.m_isCreated) {
         m_textureAlbedo.bind(ALBEDO_TEX_SLOT);
@@ -221,8 +224,6 @@ void MyGL::paintGL() {
     }
     //Draw the example sphere using our lambert shader
     m_progPBR.draw(m_geomMesh);
-
-
 }
 
 void MyGL::renderCubeMapToTexture() {
@@ -318,7 +319,7 @@ void MyGL::renderConvolvedGlossyCubeMapToTexture() {
 }
 
 void MyGL::renderGlintNoiseToTexture(unsigned int size, unsigned int seed) {
-    m_progGlintNoise.useMe(); // I think this should be used given that it is used for programs that run only once during the execution of the application
+    m_progGlintNoise.useMe(); 
 
     // vertex shader
     m_progGlintNoise.setUnifMat4("u_Model", glm::mat4(1.f));
@@ -335,9 +336,7 @@ void MyGL::renderGlintNoiseToTexture(unsigned int size, unsigned int seed) {
 
     // Set viewport dimensions equal to those of our cubemap faces
     glViewport(0, 0, m_glintNoiseFB.width(), m_glintNoiseFB.height());
-
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                GL_TEXTURE_2D,
                                m_glintNoiseFB.getTextureHandle(), 0);
@@ -348,6 +347,10 @@ void MyGL::renderGlintNoiseToTexture(unsigned int size, unsigned int seed) {
     // Make sure we reset our OpenGL output to the default frame buffer
     // so additional draw calls are visible on screen.
     glBindFramebuffer(GL_FRAMEBUFFER, this->defaultFramebufferObject());
+}
+
+void MyGL::renderCurrentSceneToTexture() {
+
 }
 
 // Change which block of code is enabled by #if statements
@@ -405,6 +408,10 @@ void MyGL::setupShaderHandles() {
     // For glints
     m_progPBR.addUniform("u_GlintNoiseTexture");
     m_progPBR.addUniform("_Glint2023NoiseMapSize");
+    m_progPBR.addUniform("u_UseGlint");
+    m_progPBR.addUniform("_ScreenSpaceScale");
+    m_progPBR.addUniform("_LogMicrofacetDensity");
+    m_progPBR.addUniform("_DensityRandomization");
 
     m_progCubemapConversion.addUniform("u_EquirectangularMap");
     m_progCubemapConversion.addUniform("u_ViewProj");
@@ -431,6 +438,11 @@ void MyGL::initPBRunifs() {
     m_progPBR.setUnifFloat("u_Metallic", 0.5f);
     m_progPBR.setUnifFloat("u_Roughness", 0.5f);
     m_progPBR.setUnifFloat("u_DisplacementMagnitude", 0.2f);
+    // Initailise glints
+    m_progPBR.setUnifUint("u_UseGlint", 1);
+    m_progPBR.setUnifFloat("_ScreenSpaceScale", 2.5f);
+    m_progPBR.setUnifFloat("_LogMicrofacetDensity", 40.f);
+    m_progPBR.setUnifFloat("_DensityRandomization", 10.f);
 }
 
 void MyGL::slot_setRed(int r) {
@@ -602,6 +614,41 @@ void MyGL::slot_loadOBJ() {
     if(m_textureDisplacement.m_isCreated) {
         m_textureDisplacement.destroy();
     }
+    update();
+}
+
+void MyGL::slot_saveImage() {
+    // renderCurrentSceneToTexture();
+
+    // GLint width = m_outputFB.width();
+    // GLint height = m_outputFB.height();
+    // QImage img(width, height, QImage::Format_RGBA8888);
+    // glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+
+    // // Flip the image because OpenGL and QImage have different coordinate systems
+    // QImage flippedImage = img.mirrored(false, true);
+
+    // // Save the image
+    // flippedImage.save(QString("output.png"));
+}
+
+void MyGL::slot_setUseGlint(bool b) {
+    m_progPBR.setUnifInt("u_UseGlint", b ? 1 : 0);
+    update();
+}
+
+void MyGL::slot_setScreenSpaceScale(double d) {
+    m_progPBR.setUnifFloat("_ScreenSpaceScale", d);
+    update();
+}
+
+void MyGL::slot_setLogMicrofacetDensity(double d) {
+    m_progPBR.setUnifFloat("_LogMicrofacetDensity", d);
+    update();
+}
+
+void MyGL::slot_setDensityRandomization(double d) {
+    m_progPBR.setUnifFloat("_DensityRandomization", d);
     update();
 }
 

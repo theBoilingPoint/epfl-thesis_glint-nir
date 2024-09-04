@@ -27,7 +27,11 @@ uniform samplerCube u_GlossyIrradianceMap;
 uniform sampler2D u_BRDFLookupTexture;
 // For rendering glints
 uniform sampler2D u_GlintNoiseTexture;
-uniform int _Glint2023NoiseMapSize;
+uniform uint _Glint2023NoiseMapSize;
+uniform bool u_UseGlint;
+uniform float _ScreenSpaceScale;
+uniform float _LogMicrofacetDensity;
+uniform float _DensityRandomization;
 
 // Varyings
 in vec3 fs_Pos;
@@ -41,10 +45,6 @@ const float PI = 3.14159f;
 const float DEG2RAD = 0.01745329251;
 const float RAD2DEG = 57.2957795131;
 
-const bool useGlint = true;
-const float _ScreenSpaceScale = 1.5;
-const float _LogMicrofacetDensity = 40.0;
-const float _DensityRandomization = 10.0;
 
 //=======================================================================================
 // TOOLS
@@ -117,6 +117,7 @@ vec3 sampleNormalDistribution(vec3 u, float mu, float sigma)
 	float x0 = sigma * 1.414213f * erfinv(2.0 * u.x - 1.0) + mu;
 	float x1 = sigma * 1.414213f * erfinv(2.0 * u.y - 1.0) + mu;
 	float x2 = sigma * 1.414213f * erfinv(2.0 * u.z - 1.0) + mu;
+
 	return vec3(x0, x1, x2);
 }
 
@@ -144,16 +145,10 @@ float HashWithoutSine13(vec3 p3)
 	return fract((p3.x + p3.y) * p3.z);
 }
 
-mat2 Inverse(mat2 A)
-{
-    return mat2(A[1][1], -A[0][1], -A[1][0], A[0][0]) / determinant(A);
-}
-
 void GetGradientEllipse(vec2 duvdx, vec2 duvdy, out vec2 ellipseMajor, out vec2 ellipseMinor)
 {
     mat2 J = mat2(duvdx, duvdy);
-    // Maybe this can be replaced by the glsl function 'inverse'?
-    J = Inverse(J);
+    J = inverse(J);
     J = J * transpose(J);
 
     float a = J[0][0];
@@ -232,16 +227,18 @@ void UnpackFloatParallel4(vec4 input, out vec4 a, out vec4 b)
 {
     uvec4 uintInput = floatBitsToUint(input);
 
-    // Unpack each component separately and combine them into vec4 results
-    a = vec4(
-        unpackHalf2x16(uintInput.x >> 16),  // Unpack the upper 16 bits of x
-        unpackHalf2x16(uintInput.y >> 16)   // Unpack the upper 16 bits of y
-    );
-    
-    b = vec4(
-        unpackHalf2x16(uintInput.x & 0xFFFFu),  // Unpack the lower 16 bits of x
-        unpackHalf2x16(uintInput.y & 0xFFFFu)   // Unpack the lower 16 bits of y
-    );
+    // unpackHalf2x16 returns a two-component floating-point vector with components obtained by 
+    // unpacking a 32-bit unsigned integer into a pair of 16-bit values, interpreting those values 
+    // as 16-bit floating-point numbers according to the OpenGL Specification, and converting them 
+    // to 32-bit floating-point values. The first component of the vector is obtained from the 16 
+    // least-significant bits of v; the second component is obtained from the 16 most-significant bits of v.
+    vec2 x = unpackHalf2x16(uintInput.x);
+    vec2 y = unpackHalf2x16(uintInput.y);
+    vec2 z = unpackHalf2x16(uintInput.z);
+    vec2 w = unpackHalf2x16(uintInput.w);
+
+    a = vec4(x[0], y[0], z[0], w[0]);
+    b = vec4(x[1], y[1], z[1], w[1]);
 }
 
 
@@ -303,7 +300,7 @@ float SampleGlintGridSimplex(float roughness, vec2 uv, uint gridSeed, vec2 slope
     CustomRand4Texture(roughness, slope, rand2.yz, rand2SlopesB, rand2SlopesG, slopeLerp2);
 
     // Compute microfacet count with randomization
-    vec3 logDensityRand = clamp(sampleNormalDistribution(vec3(rand0.x, rand1.x, rand2.x), _LogMicrofacetDensity, _DensityRandomization), 0.0, 50.0); // TODO : optimize sampleNormalDist
+    vec3 logDensityRand = clamp(sampleNormalDistribution(vec3(rand0.x, rand1.x, rand2.x), _LogMicrofacetDensity, _DensityRandomization), 0.0, 50.0); 
     vec3 microfacetCount = max(vec3(0.0), footprintArea * exp(logDensityRand));
     vec3 microfacetCountBlended = microfacetCount * gridWeight;
 
@@ -421,7 +418,7 @@ void GetAnisoCorrectingGridTetrahedron(bool centerSpecialCase, inout float theta
     }
 }
 
-vec4 SampleGlints2023NDF(float roughness, vec3 localHalfVector, float targetNDF, float maxNDF, vec2 uv, vec2 duvdx, vec2 duvdy)
+vec4 sampleGlints(float roughness, vec3 localHalfVector, float targetNDF, float maxNDF, vec2 uv, vec2 duvdx, vec2 duvdy)
 {
     // ACCURATE PIXEL FOOTPRINT ELLIPSE
     vec2 ellipseMajor, ellipseMinor;
@@ -494,10 +491,16 @@ vec4 SampleGlints2023NDF(float roughness, vec3 localHalfVector, float targetNDF,
     uint gridSeedC = uint(HashWithoutSine13(vec3(log2(divLods[int(tetraC.z)]), mod(thetaBins[int(tetraC.x)], 360.0), ratios[int(tetraC.y)])) * 4294967296.0);
     uint gridSeedD = uint(HashWithoutSine13(vec3(log2(divLods[int(tetraD.z)]), mod(thetaBins[int(tetraD.x)], 360.0), ratios[int(tetraD.y)])) * 4294967296.0);
     float sampleA = SampleGlintGridSimplex(roughness, uvRotA / divLods[int(tetraA.z)] / vec2(1.0, ratios[int(tetraA.y)]), gridSeedA, slope, ratios[int(tetraA.y)] * footprintAreas[int(tetraA.z)], rescaledTargetNDF, tetraBarycentricWeights.x);
-    float sampleB = SampleGlintGridSimplex(roughness,uvRotB / divLods[int(tetraB.z)] / vec2(1.0, ratios[int(tetraB.y)]), gridSeedB, slope, ratios[int(tetraB.y)] * footprintAreas[int(tetraB.z)], rescaledTargetNDF, tetraBarycentricWeights.y);
-    float sampleC = SampleGlintGridSimplex(roughness,uvRotC / divLods[int(tetraC.z)] / vec2(1.0, ratios[int(tetraC.y)]), gridSeedC, slope, ratios[int(tetraC.y)] * footprintAreas[int(tetraC.z)], rescaledTargetNDF, tetraBarycentricWeights.z);
-    float sampleD = SampleGlintGridSimplex(roughness,uvRotD / divLods[int(tetraD.z)] / vec2(1.0, ratios[int(tetraD.y)]), gridSeedD, slope, ratios[int(tetraD.y)] * footprintAreas[int(tetraD.z)], rescaledTargetNDF, tetraBarycentricWeights.w);
+    float sampleB = SampleGlintGridSimplex(roughness, uvRotB / divLods[int(tetraB.z)] / vec2(1.0, ratios[int(tetraB.y)]), gridSeedB, slope, ratios[int(tetraB.y)] * footprintAreas[int(tetraB.z)], rescaledTargetNDF, tetraBarycentricWeights.y);
+    float sampleC = SampleGlintGridSimplex(roughness, uvRotC / divLods[int(tetraC.z)] / vec2(1.0, ratios[int(tetraC.y)]), gridSeedC, slope, ratios[int(tetraC.y)] * footprintAreas[int(tetraC.z)], rescaledTargetNDF, tetraBarycentricWeights.z);
+    float sampleD = SampleGlintGridSimplex(roughness, uvRotD / divLods[int(tetraD.z)] / vec2(1.0, ratios[int(tetraD.y)]), gridSeedD, slope, ratios[int(tetraD.y)] * footprintAreas[int(tetraD.z)], rescaledTargetNDF, tetraBarycentricWeights.w);
     return vec4((sampleA + sampleB + sampleC + sampleD) * (1.0 / roughness) * maxNDF);
+}
+
+vec3 transformToWorldToTangent(vec3 v) {
+    mat3 TBN = mat3(fs_Tan, fs_Bit, normalize(cross(fs_Tan, fs_Bit)));
+    mat3 TBNInv = transpose(TBN);
+    return TBNInv * v;
 }
 
 void main()
@@ -515,7 +518,7 @@ void main()
     vec3 wo = normalize(u_CamPos - fs_Pos);
     // Reflecting wo about N
     vec3 wi = reflect(-wo, N);
-    vec3 wh = normalize(wi + wo);
+    vec3 wh_tangent = normalize(transformToWorldToTangent(wo) + transformToWorldToTangent(wi));
 
     /**
         The diffuse part.
@@ -537,8 +540,8 @@ void main()
     vec3 Li = textureLod(u_GlossyIrradianceMap, wi, roughness * MAX_REFLECTION_LOD).rgb;
 
     vec3 specular;
-    if (useGlint) {
-        specular = Li * SampleGlints2023NDF(roughness, wh, 0.5, 1.0, fs_UV, dFdx(fs_UV), dFdy(fs_UV)).rgb;
+    if (u_UseGlint) {
+        specular = Li * sampleGlints(roughness, wh_tangent, 0.5, 1.0, fs_UV, dFdx(fs_UV), dFdy(fs_UV)).rgb;
     }
     else {
         // The BRDF part of the split sum approximation.

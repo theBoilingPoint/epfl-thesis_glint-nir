@@ -42,9 +42,9 @@ void MyGL::mouseMoveEvent(QMouseEvent *e)
 
 void MyGL::wheelEvent(QWheelEvent *e)
 {
-//    m_glCamera.Zoom(e->angleDelta().y() * 0.02f);
-//    m_glCamera.RecomputeAttributes();
-//    update();
+   m_glCamera.Zoom(e->angleDelta().y() * 0.01f);
+   m_glCamera.RecomputeAttributes();
+   update();
 }
 
 void MyGL::keyPressEvent(QKeyEvent *e)

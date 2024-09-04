@@ -19,16 +19,14 @@ uint CoordToFlatId(uvec2 coord)
 }
 
 float PackFloats(float a, float b)
-{
-    // Convert float to 16-bit half-float
-    uint a16 = floatBitsToUint(packHalf2x16(vec2(a, 0.0))) & 0xFFFFu;
-    uint b16 = floatBitsToUint(packHalf2x16(vec2(b, 0.0))) & 0xFFFFu;
-
-    // Combine the two 16-bit values into a 32-bit unsigned int
-    uint abPacked = (a16 << 16) | b16;
-
-    // Convert the packed 32-bit unsigned int back to float
-    return uintBitsToFloat(abPacked);
+{   
+    // returns an unsigned integer obtained by converting the components of a two-component 
+    // floating-point vector to the 16-bit floating-point representation found in the OpenGL Specification, 
+    // and then packing these two 16-bit integers into a 32-bit unsigned integer. 
+    // The first vector component specifies the 16 least-significant bits of the result; 
+    // the second component specifies the 16 most-significant bits.
+    uint abPacked = packHalf2x16(vec2(a, b));
+    return uintBitsToFloat(abPacked); 
 }
 
 uint WangHash(uint seed)
