@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-EPSILON = 1e-6
+EPSILON = 1e-5
 
 class PCG3dFloat(nn.Module):
     def __init__(self, input_size, output_size):
@@ -70,27 +70,28 @@ def is_valid(tensor):
 
     return valid
 
+@torch.no_grad()
+def pcg3dFloat_np(arr):
+    # Range of uint values: [0, 4294967295]
+    assert arr.max() <= 4294967295.0 and arr.min() >= 0.0
+    
+    v = arr.astype(np.uint32)
+    v = v * np.uint32(1664525) + np.uint32(1013904223)
 
-def remove_zeros(tensor):
-    res = torch.where(tensor == 0.0, tensor.mean(), tensor)
-    if torch.any(res == 0.0):
-        res = torch.where(res == 0.0, EPSILON, res)
+    v[..., 0] += v[..., 1] * v[..., 2]
+    v[..., 1] += v[..., 2] * v[..., 0]
+    v[..., 2] += v[..., 0] * v[..., 1]
 
-    return res
+    v ^= v >> np.uint32(16)
+
+    v[..., 0] += v[..., 1] * v[..., 2]
+    v[..., 1] += v[..., 2] * v[..., 0]
+    v[..., 2] += v[..., 0] * v[..., 1]
+
+    return torch.from_numpy((v * (1.0 / 4294967296.0)).astype(np.float32))
 
 def toIntApprox(tensor):
     return torch.clamp(torch.trunc(tensor), min=-2147483648.0, max=2147483647.0)
-
-def normalise_to(tensor, min, max):
-    min_val = tensor.min()
-    max_val = tensor.max()
-    return min + ((tensor - min_val) * (max - min)) / remove_zeros(max_val - min_val)
-
-
-def scale(tensor, min=0.0, max=1.0):
-    assert min <= max
-    return (max - min) * tensor + min
-
 
 """
 The codes below are modified from Glints2023.hlsl in https://drive.google.com/file/d/1YQDxlkZFEwV6ZeaXCUYMhB4P-3ODS32e/view.
@@ -182,9 +183,7 @@ def VectorToSlope(v):
 
 
 def SlopeToVector(s):
-    z = 1 / remove_zeros(
-        torch.sqrt(torch.clamp(s[0] * s[0] + s[1] * s[1] + 1, min=0.0))
-    )
+    z = 1 / (torch.sqrt(torch.clamp(s[0] * s[0] + s[1] * s[1] + 1, min=0.0)) + EPSILON)
     x = s[0] * z
     y = s[1] * z
 
@@ -212,6 +211,8 @@ def BilinearLerp(values, valuesLerp):
     resultY = torch.lerp(values[..., 1], values[..., 3], valuesLerp[..., 0])
 
     res = torch.lerp(resultX, resultY, valuesLerp[..., 1])
+    
+    is_valid(res)
 
     return res
 
@@ -225,10 +226,12 @@ def Remap01To(s, b1, b2):
 
 
 def RemapTo01(s, a1, a2):
-     return (s - a1) / (a2 - a1 + EPSILON)
+    return (s - a1) / (a2 - a1 + EPSILON)
 
 
 def GetBarycentricWeightsTetrahedron(p, v):
+    assert v.min() >= 0.0 and v.max() <= 1.0
+    
     # Ensure p and v are tensors and on the same device
     p = p.to(v.device)
     
@@ -245,22 +248,17 @@ def GetBarycentricWeightsTetrahedron(p, v):
     c41 = v4 - p
     
     # Compute intermediate values
-    m1 = c31[:, 1:] / (c31[:, :1] + EPSILON)  # Add epsilon to avoid division by zero
-    c12 = c11[:, 1:] - c11[:, :1] * m1
-    c22 = c21[:, 1:] - c21[:, :1] * m1
-    c32 = c41[:, 1:] - c41[:, :1] * m1
+    m1 = c31[:, 1:] / (c31[:, 0].unsqueeze(-1) + EPSILON)  
+    c12 = c11[:, 1:] - c11[:, 0].unsqueeze(-1) * m1
+    c22 = c21[:, 1:] - c21[:, 0].unsqueeze(-1) * m1
+    c32 = c41[:, 1:] - c41[:, 0].unsqueeze(-1) * m1
     
     uvwk = torch.zeros((p.shape[0], 4), device=p.device, dtype=p.dtype)
-    m2 = c22[:, 1] / (c22[:, 0] + EPSILON)  # Add epsilon to avoid division by zero
+    m2 = c22[:, 1] / (c22[:, 0] + EPSILON)  
     
-    uvwk[:, 0] = (c32[:, 0] * m2 - c32[:, 1]) / (c12[:, 1] - c12[:, 0] * m2 + EPSILON)  # Add epsilon to avoid division by zero
-    uvwk[:, 1] = -(c32[:, 0] + c12[:, 0] * uvwk[:, 0]) / (c22[:, 0] + EPSILON)  # Add epsilon to avoid division by zero
-    uvwk[:, 2] = -(c41[:, 0] + c21[:, 0] * uvwk[:, 1] + c11[:, 0] * uvwk[:, 0]) / (c31[:, 0] + EPSILON)  # Add epsilon to avoid division by zero
+    uvwk[:, 0] = (c32[:, 0] * m2 - c32[:, 1]) / (c12[:, 1] - c12[:, 0] * m2 + EPSILON)  
+    uvwk[:, 1] = -(c32[:, 0] + c12[:, 0] * uvwk[:, 0]) / (c22[:, 0] + EPSILON)  
+    uvwk[:, 2] = -(c41[:, 0] + c21[:, 0] * uvwk[:, 1] + c11[:, 0] * uvwk[:, 0]) / (c31[:, 0] + EPSILON)  
     uvwk[:, 3] = 1.0 - uvwk[:, 2] - uvwk[:, 1] - uvwk[:, 0]
 
-    # Ensure non-negativity and sum-to-one condition
-    uvwk = torch.clamp(uvwk, min=0.0)
-    uvwk = uvwk / uvwk.sum(dim=1, keepdim=True)
-    
-    assert is_valid(uvwk)
     return uvwk

@@ -11,7 +11,6 @@ import torch
 import tinycudann as tcnn
 import numpy as np
 from functools import partial
-from .renderutils.glint_brdf.glint_utils import scale
 
 #######################################################################################################################################################
 # Small MLP using PyTorch primitives, internal helper class

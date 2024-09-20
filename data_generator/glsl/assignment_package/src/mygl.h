@@ -31,6 +31,9 @@ class MyGL
 {
     Q_OBJECT
 private:
+    glm::mat4 modelMatrix_default;
+    glm::mat4 modelMatrix;
+
     SquarePlane m_geomSquare;
     Mesh m_geomMesh;
     Texture2D m_textureAlbedo;
@@ -55,7 +58,6 @@ private:
     Texture2D m_brdfLookupTexture;
     // Used for glints
     FrameBuffer2D m_glintNoiseFB;
-    FrameBuffer2D m_outputFB;
 
     ShaderProgram m_progPBR;
     ShaderProgram m_progCubemapConversion;
@@ -75,6 +77,8 @@ private:
     bool m_cubemapsNotGenerated;
 
     QString getCurrentPath() const;
+
+    unsigned int backgroundColour;
 
 
 public:
@@ -98,7 +102,6 @@ protected:
     void renderConvolvedGlossyCubeMapToTexture();
     void renderEnvironmentMap();
     void renderGlintNoiseToTexture(unsigned int size, unsigned int seed);
-    void renderCurrentSceneToTexture();
 
     void setupShaderHandles();
 
@@ -119,6 +122,10 @@ public slots:
     void slot_setScreenSpaceScale(double);
     void slot_setLogMicrofacetDensity(double);
     void slot_setDensityRandomization(double);
+    void slot_setRotationX(double);
+    void slot_setRotationY(double);
+    void slot_setRotationZ(double);
+    void slot_changeBackgroundColour(int);
 };
 
 #endif // MYGL_H

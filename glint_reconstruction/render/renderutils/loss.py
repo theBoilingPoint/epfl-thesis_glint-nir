@@ -8,7 +8,6 @@
 # its affiliates is strictly prohibited.
 
 import torch
-from .glint_brdf.glint_utils import normalise_to
 
 #----------------------------------------------------------------------------
 # HDR image losses

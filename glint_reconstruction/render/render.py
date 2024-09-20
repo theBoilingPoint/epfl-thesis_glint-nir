@@ -15,8 +15,6 @@ from . import renderutils as ru
 from . import light
 
 from .renderutils.glint_brdf.glint_brdf import GlintBRDF
-from .renderutils.glint_brdf.glint_utils import scale, EPSILON, print_gpu_mem
-
 
 # ==============================================================================================
 #  Helper functions
@@ -44,8 +42,7 @@ def shade(
     view_pos,
     lgt,
     material,
-    bsdf,
-    FLAGS,
+    bsdf
 ):
     ################################################################################
     # Texture lookups
@@ -107,39 +104,22 @@ def shade(
             #
             # Get params for glint brdf
             #
-            view_vec = torch.nn.functional.normalize(
-                view_pos - gb_pos, dim=-1
-            )  # code copied from bsdf.py
-            # calculated according to: https://www.gamedeveloper.com/programming/three-normal-mapping-techniques-explained-for-the-mathematically-uninclined
-            gb_bitangent = torch.cross(
-                gb_normal, gb_tangent
-            )  # we should time the handedness  => https://docs.marmoset.co/docs/tangent-handedness/
+            # Calculate TBN matrix
+            gb_normal_normalised = torch.nn.functional.normalize(gb_normal, dim=-1)
+            gb_tangent_normalised = torch.nn.functional.normalize(gb_tangent, dim=-1)
+            gb_bitangent_normalised = torch.nn.functional.normalize(torch.cross(gb_normal_normalised, gb_tangent_normalised), dim=-1)  # we should time the handedness  => https://docs.marmoset.co/docs/tangent-handedness/
+            gb_TBN_inv = torch.stack((gb_tangent_normalised, gb_bitangent_normalised, gb_normal_normalised), dim=3) # Equivalent to TBN transposed
+            
             # calculated based on Unity's implementation
-            gb_TBN = torch.stack((gb_tangent, gb_bitangent, gb_normal), dim=3)
-            view_vec_ts = torch.matmul(gb_TBN, view_vec.unsqueeze(-1)).squeeze(-1)
-            normal_ts = torch.matmul(gb_TBN, gb_normal.unsqueeze(-1)).squeeze(-1)
-            light_vec_ts = (
-                view_vec_ts
-                - 2 * (view_vec_ts * normal_ts).sum(dim=-1).unsqueeze(-1) * normal_ts
-            )
-
-            half_vec_ts = torch.nn.functional.normalize(
-                light_vec_ts + view_vec_ts, dim=-1
-            )
+            wo = torch.nn.functional.normalize(view_pos - gb_pos, dim=-1)  
+            wi = torch.nn.functional.normalize(util.reflect_glsl(-wo, gb_normal_normalised), dim=-1) 
+            
+            wo_ts = torch.matmul(gb_TBN_inv, wo.unsqueeze(-1)).squeeze(-1)
+            wi_ts = torch.matmul(gb_TBN_inv, wi.unsqueeze(-1)).squeeze(-1)
+            wh_ts = torch.nn.functional.normalize(wi_ts + wo_ts, dim=-1)
+            
             duvdx = gb_texc_deriv[..., 0:2]
             duvdy = gb_texc_deriv[..., 2:4]
-
-            batch_size = half_vec_ts.shape[0]
-            img_dim = half_vec_ts.shape[1]
-            # num_vals = batch_size * img_dim * img_dim
-
-            # Hardcoded
-            # _LogMicrofacetDensity = torch.full(
-            #     (num_vals,), material["glint_params"][0], device=FLAGS.device
-            # )  # number of facets
-            # _DensityRandomization = torch.full(
-            #     (num_vals,), material["glint_params"][1], device=FLAGS.device
-            # )  # same number of facets, but higher -> more glints
 
             # initialise the glint sampling class
             glint_evaluator = GlintBRDF(
@@ -151,13 +131,16 @@ def shade(
 
             # sample glint texture
             ks_tmp = glint_evaluator.sample_glints(
-                half_vec_ts.view(-1, 3).detach(),
+                wh_ts.view(-1, 3).detach(),
                 gb_texc.view(-1, 2).detach(),
                 duvdx.view(-1, 2).detach(),
                 duvdy.view(-1, 2).detach(),
             )
 
             # assign ks
+            batch_size = wh_ts.shape[0]
+            img_dim = wh_ts.shape[1]
+
             ks = torch.cat(
                 (
                     ks[..., :2].view(-1, 2),
@@ -238,7 +221,7 @@ def shade(
 #  - Single material
 # ==============================================================================================
 def render_layer(
-    rast, rast_deriv, mesh, view_pos, lgt, resolution, spp, msaa, bsdf, FLAGS
+    rast, rast_deriv, mesh, view_pos, lgt, resolution, spp, msaa, bsdf
 ):
     full_res = [resolution[0] * spp, resolution[1] * spp]
 
@@ -308,8 +291,7 @@ def render_layer(
         view_pos,
         lgt,
         mesh.material,
-        bsdf,
-        FLAGS,
+        bsdf
     )
 
     ################################################################################
@@ -344,8 +326,7 @@ def render_mesh(
     num_layers=1,
     msaa=False,
     background=None,
-    bsdf=None,
-    FLAGS=None,
+    bsdf=None
 ):
     def prepare_input_vector(x):
         x = (
@@ -409,8 +390,7 @@ def render_mesh(
                         resolution,
                         spp,
                         msaa,
-                        bsdf,
-                        FLAGS,
+                        bsdf
                     ),
                     rast,
                 )

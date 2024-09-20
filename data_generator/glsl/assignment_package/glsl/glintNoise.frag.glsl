@@ -26,6 +26,7 @@ float PackFloats(float a, float b)
     // The first vector component specifies the 16 least-significant bits of the result; 
     // the second component specifies the 16 most-significant bits.
     uint abPacked = packHalf2x16(vec2(a, b));
+    
     return uintBitsToFloat(abPacked); 
 }
 
@@ -36,6 +37,7 @@ uint WangHash(uint seed)
     seed = seed ^ (seed >> 4);
     seed *= 0x27d4eb2du;
     seed = seed ^ (seed >> 15);
+
     return seed;
 }
 
@@ -51,6 +53,7 @@ float RandXorshiftFloat(inout uint rngState)
 {
     RandXorshift(rngState);
     float res = float(rngState) * (1.0 / 4294967296.0);
+
     return res;
 }
 
@@ -90,6 +93,7 @@ float ErfInv(float x)
 float InvCDF(float U, float mu, float sigma)
 {
     float x = sigma * sqrt(2.0) * ErfInv(2.0 * U - 1.0) + mu;
+
     return x;
 }
 

@@ -11,30 +11,32 @@
 #include "texture.h"
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
 
 MyGL::MyGL(QWidget *parent)
-    : OpenGLContext(parent),
-      m_geomSquare(this),
-      m_geomMesh(this), m_textureAlbedo(this), m_textureMetallic(this),
-      m_textureNormals(this), m_textureRoughness(this), m_textureAO(this),
-      m_textureDisplacement(this),
-      m_geomCube(this),
-      m_hdrEnvMap(this),
-      m_environmentCubemapFB(this, 1024, 1024, 1.f),
-      m_diffuseIrradianceFB(this, 32, 32, 1.f),
-      m_glossyIrradianceFB(this, 512, 512, 1.f),
-      m_brdfLookupTexture(this),
-      // TODO: for now the width and height are hardcoded. But it should be consistent with what's used in glintNoise.frag.glsl
-      m_glintNoiseFB(this, 1024, 1024, 1.f),
-      m_outputFB(this, this->width(), this->height(),
-                     this->devicePixelRatio()),
-      m_progPBR(this), m_progCubemapConversion(this),
-      m_progCubemapDiffuseConvolution(this),
-      m_progCubemapGlossyConvolution(this),
-      m_progEnvMap(this),
-      m_progGlintNoise(this),
-      m_glCamera(), m_mousePosPrev(), m_albedo(0.5f, 0.f, 0.f),
-      m_cubemapsNotGenerated(true)
+    :   OpenGLContext(parent),
+        modelMatrix_default(glm::mat4(1.f)),
+        modelMatrix(glm::mat4(1.f)),
+        m_geomSquare(this),
+        m_geomMesh(this), m_textureAlbedo(this), m_textureMetallic(this),
+        m_textureNormals(this), m_textureRoughness(this), m_textureAO(this),
+        m_textureDisplacement(this),
+        m_geomCube(this),
+        m_hdrEnvMap(this),
+        m_environmentCubemapFB(this, 1024, 1024, 1.f),
+        m_diffuseIrradianceFB(this, 32, 32, 1.f),
+        m_glossyIrradianceFB(this, 512, 512, 1.f),
+        m_brdfLookupTexture(this),
+        // TODO: for now the width and height are hardcoded. But it should be consistent with what's used in glintNoise.frag.glsl
+        m_glintNoiseFB(this, 1024, 1024, 1.f),
+        m_progPBR(this), m_progCubemapConversion(this),
+        m_progCubemapDiffuseConvolution(this),
+        m_progCubemapGlossyConvolution(this),
+        m_progEnvMap(this),
+        m_progGlintNoise(this),
+        m_glCamera(), m_mousePosPrev(), m_albedo(0.5f, 0.5f, 0.5f),
+        m_cubemapsNotGenerated(true),
+        backgroundColour(0)
 {
     setFocusPolicy(Qt::StrongFocus);
 }
@@ -82,7 +84,7 @@ void MyGL::initializeGL()
     setupShaderHandles();
 
     path = getCurrentPath();
-    path.append("/assignment_package/environment_maps/interior_atelier_soft_daylight.hdr");
+    path.append("/assignment_package/environment_maps/clarens.hdr");
     m_hdrEnvMap.create(path.toStdString().c_str(), false);
 
     m_environmentCubemapFB.create(true);
@@ -90,7 +92,6 @@ void MyGL::initializeGL()
     m_glossyIrradianceFB.create(true);
     m_brdfLookupTexture.create(":/textures/brdfLUT.png", false);
     m_glintNoiseFB.create();
-    m_outputFB.create();
 
     // We have to have a VAO bound in OpenGL 3.2 Core. But if we're not
     // using multiple VAOs, we can just bind one once.
@@ -136,7 +137,7 @@ void MyGL::paintGL() {
         // Lambertian BRDF)
         renderConvolvedDiffuseCubeMapToTexture();
         printGLErrorLog();
-        // Generate a cubemap of the varying levels of glossy irradiance (light
+        // Generate a cubemap of the varying levels of glossy irradiance light
         // reflected by the Cook-Torrance
         renderConvolvedGlossyCubeMapToTexture();
         printGLErrorLog();
@@ -157,8 +158,8 @@ void MyGL::paintGL() {
     m_progPBR.setUnifVec3("u_CamPos", m_glCamera.eye);
 
     //Send the geometry's transformation matrix to the shader
-    m_progPBR.setUnifMat4("u_Model", glm::mat4(1.f));
-    m_progPBR.setUnifMat4("u_ModelInvTr", glm::mat4(1.f));
+    m_progPBR.setUnifMat4("u_Model", modelMatrix);
+    m_progPBR.setUnifMat4("u_ModelInvTr", glm::transpose(glm::inverse(modelMatrix)));
     // Set up the diffuse irradiance map on the GPU so our surface shader can read it
     m_diffuseIrradianceFB.bindToTextureSlot(DIFFUSE_IRRADIANCE_CUBE_TEX_SLOT);
     m_progPBR.setUnifInt("u_DiffuseIrradianceMap", DIFFUSE_IRRADIANCE_CUBE_TEX_SLOT);
@@ -322,7 +323,7 @@ void MyGL::renderGlintNoiseToTexture(unsigned int size, unsigned int seed) {
     m_progGlintNoise.useMe(); 
 
     // vertex shader
-    m_progGlintNoise.setUnifMat4("u_Model", glm::mat4(1.f));
+    m_progGlintNoise.setUnifMat4("u_Model", modelMatrix);
     m_progGlintNoise.setUnifMat4("u_ViewProj", m_glCamera.getViewProj());
     // fragment shader
     m_progGlintNoise.setUnifUint("_FrameSize", size);
@@ -349,35 +350,32 @@ void MyGL::renderGlintNoiseToTexture(unsigned int size, unsigned int seed) {
     glBindFramebuffer(GL_FRAMEBUFFER, this->defaultFramebufferObject());
 }
 
-void MyGL::renderCurrentSceneToTexture() {
-
-}
-
 // Change which block of code is enabled by #if statements
 // in order to display one of your convoluted irradiance maps
 // instead of the photographic environment map.
 void MyGL::renderEnvironmentMap() {
+    // Enable blending for transparency
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // Standard alpha blending
+
+    // Clear the background with a fully transparent color (RGBA: 0, 0, 0, 0)
+    glClearColor(0.f, 0.f, 0.f, 0.f); // Set clear color to transparent
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // Clear the color and depth buffers
+
     // Render photographic environment map as background
-#if 1
     m_environmentCubemapFB.bindToTextureSlot(ENV_MAP_CUBE_TEX_SLOT);
     m_progEnvMap.setUnifInt("u_EnvironmentMap", ENV_MAP_CUBE_TEX_SLOT);
-#endif
-
-    // Render diffuse irradiance map as background (to debug)
-#if 0
-    m_diffuseIrradianceFB.bindToTextureSlot(DIFFUSE_IRRADIANCE_CUBE_TEX_SLOT);
-    m_progEnvMap.setUnifInt("u_EnvironmentMap", DIFFUSE_IRRADIANCE_CUBE_TEX_SLOT);
-#endif
-
-    // Render glossy irradiance map as background (to debug)
-#if 0
-    m_glossyIrradianceFB.bindToTextureSlot(GLOSSY_IRRADIANCE_CUBE_TEX_SLOT);
-    m_progEnvMap.setUnifInt("u_EnvironmentMap", GLOSSY_IRRADIANCE_CUBE_TEX_SLOT);
-#endif
 
     // Set the environment map shader's cubemap sampler to the same tex slot
     m_progEnvMap.setUnifMat4("u_ViewProj", m_glCamera.getViewProj_OrientOnly());
+
+    m_progEnvMap.setUnifUint("backgroundType", backgroundColour);
+
+    // Draw the environment cube, which should output RGBA values in the fragment shader
     m_progEnvMap.draw(m_geomCube);
+
+    // Disable blending after rendering the environment map (optional)
+    glDisable(GL_BLEND);
 }
 
 void MyGL::setupShaderHandles() {
@@ -418,6 +416,7 @@ void MyGL::setupShaderHandles() {
 
     m_progEnvMap.addUniform("u_EnvironmentMap");
     m_progEnvMap.addUniform("u_ViewProj");
+    m_progEnvMap.addUniform("backgroundType");
 
     m_progCubemapDiffuseConvolution.addUniform("u_EnvironmentMap");
     m_progCubemapDiffuseConvolution.addUniform("u_ViewProj");
@@ -448,29 +447,35 @@ void MyGL::initPBRunifs() {
 void MyGL::slot_setRed(int r) {
     m_albedo.r = r / 100.f;
     m_progPBR.setUnifVec3("u_Albedo", m_albedo);
+    std::cout << "Red: " << m_albedo.r << std::endl;
     update();
 }
 void MyGL::slot_setGreen(int g) {
     m_albedo.g = g / 100.f;
     m_progPBR.setUnifVec3("u_Albedo", m_albedo);
+    std::cout << "Green: " << m_albedo.g << std::endl;
     update();
 }
 void MyGL::slot_setBlue(int b) {
     m_albedo.b = b / 100.f;
     m_progPBR.setUnifVec3("u_Albedo", m_albedo);
+    std::cout << "Blue: " << m_albedo.b << std::endl;
     update();
 }
 
 void MyGL::slot_setMetallic(int m) {
     m_progPBR.setUnifFloat("u_Metallic", m / 100.f);
+    std::cout << "Metallic: " << m / 100.f << std::endl;
     update();
 }
 void MyGL::slot_setRoughness(int r) {
     m_progPBR.setUnifFloat("u_Roughness", r / 100.f);
+    std::cout << "Roughness: " << r / 100.f << std::endl;
     update();
 }
 void MyGL::slot_setAO(int a) {
     m_progPBR.setUnifFloat("u_AmbientOcclusion", a / 100.f);
+    std::cout << "Ambient Occlusion: " << a / 100.f << std::endl;
     update();
 }
 void MyGL::slot_setDisplacement(double d) {
@@ -618,18 +623,53 @@ void MyGL::slot_loadOBJ() {
 }
 
 void MyGL::slot_saveImage() {
-    // renderCurrentSceneToTexture();
+    // Get the filename using a QFileDialog to allow the user to choose where to save the image
+    QString fileName = QFileDialog::getSaveFileName(this, tr("Save Image"), "", tr("Images (*.png *.xpm *.jpg)"));
 
-    // GLint width = m_outputFB.width();
-    // GLint height = m_outputFB.height();
-    // QImage img(width, height, QImage::Format_RGBA8888);
-    // glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, img.bits());
+    // Check if the user provided a filename
+    if (fileName.isEmpty()) {
+        return; // If the user cancelled the dialog, do nothing
+    }
 
-    // // Flip the image because OpenGL and QImage have different coordinate systems
-    // QImage flippedImage = img.mirrored(false, true);
+    // Supported extensions
+    QStringList supportedExtensions = {"png", "jpg", "xpm"};
 
-    // // Save the image
-    // flippedImage.save(QString("output.png"));
+    // Extract the extension from the file name
+    QString extension = QFileInfo(fileName).suffix().toLower();
+
+    // Check if the file has a valid extension
+    if (!supportedExtensions.contains(extension)) {
+        QMessageBox::warning(this, tr("Invalid File Extension"), 
+                             tr("Please specify a valid file extension when you are entering the filename: .png, .jpg, or .xpm."));
+        return;
+    }
+
+    // Bind the default framebuffer (typically framebuffer 0)
+    makeCurrent();
+
+    // Get the size of the viewport (usually the size of the window)
+    GLint viewport[4];
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    int width = viewport[2];
+    int height = viewport[3];
+
+    // Allocate memory to store the pixel data
+    QByteArray pixelData;
+    pixelData.resize(width * height * 4); // 4 channels: RGBA
+
+    // Read the pixel data from the framebuffer
+    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixelData.data());
+
+    // Create a QImage from the pixel data
+    QImage image(reinterpret_cast<const uchar*>(pixelData.constData()), width, height, QImage::Format_RGBA8888);
+
+    // OpenGL's origin is bottom-left, while QImage's origin is top-left, so we need to mirror the image vertically
+    QImage flippedImage = image.mirrored();
+
+    // Save the image to the specified file
+    if (!flippedImage.save(fileName)) {
+        qWarning("Failed to save image");
+    }
 }
 
 void MyGL::slot_setUseGlint(bool b) {
@@ -649,6 +689,31 @@ void MyGL::slot_setLogMicrofacetDensity(double d) {
 
 void MyGL::slot_setDensityRandomization(double d) {
     m_progPBR.setUnifFloat("_DensityRandomization", d);
+    update();
+}
+
+void MyGL::slot_setRotationX(double d) {
+    float rotationX = glm::radians(static_cast<float>(d));
+    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationX, glm::vec3(1, 0, 0)) * modelMatrix_default;
+    update();
+}
+
+void MyGL::slot_setRotationY(double d) {
+    float rotationY = glm::radians(static_cast<float>(d));
+    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationY, glm::vec3(0, 1, 0)) * modelMatrix_default;
+    update();
+}
+
+void MyGL::slot_setRotationZ(double d) {
+    float rotationZ = glm::radians(static_cast<float>(d));
+    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationZ, glm::vec3(0, 0, 1)) * modelMatrix_default;
+    update();
+}
+
+void MyGL::slot_changeBackgroundColour(int idx) {
+    std::cout << "Background colour: " << idx << std::endl;
+    backgroundColour = static_cast<unsigned int>(idx);
+
     update();
 }
 

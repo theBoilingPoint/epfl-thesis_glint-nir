@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import nvdiffrast.torch as dr
 import imageio
+import OpenEXR
 
 #----------------------------------------------------------------------------
 # Vector operations
@@ -19,6 +20,9 @@ import imageio
 
 def dot(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.sum(x*y, -1, keepdim=True)
+
+def reflect_glsl(x: torch.Tensor, n: torch.Tensor) -> torch.Tensor:
+    return x - 2 * dot(n, x) * n
 
 def reflect(x: torch.Tensor, n: torch.Tensor) -> torch.Tensor:
     return 2*dot(x, n)*n - x
@@ -113,6 +117,7 @@ def latlong_to_cubemap(latlong_map, res):
         texcoord = torch.cat((tu, tv), dim=-1)
 
         cubemap[s, ...] = dr.texture(latlong_map[None, ...], texcoord[None, ...], filter_mode='linear')[0]
+        
     return cubemap
 
 def cubemap_to_latlong(cubemap, res):
@@ -423,18 +428,23 @@ def save_image(fn, x : np.ndarray):
         if os.path.splitext(fn)[1] == ".png":
             imageio.imwrite(fn, np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8), compress_level=3) # Low compression for faster saving
         elif os.path.splitext(fn)[1] == ".exr":
-            imageio.imwrite(fn, x)
+            img = x.asdtype(np.float32)
+        
+            R = img[..., 0].tobytes()
+            G = img[..., 1].tobytes()
+            B = img[..., 2].tobytes()
+            
+            # Create an EXR file
+            HEADER = OpenEXR.Header(img.shape[1], img.shape[0])
+            exr = OpenEXR.OutputFile(fn, HEADER)
+            exr.writePixels({'R': R, 'G': G, 'B': B})
+            exr.close()
+        elif os.path.splitext(fn)[1] == ".hdr":
+            imageio.imwrite(fn, x.asdtype(np.float32), format='HDR-FI')
         else:
             imageio.imwrite(fn, np.clip(np.rint(x * 255.0), 0, 255).astype(np.uint8))
     except:
         print("WARNING: FAILED to save image %s" % fn)
-
-def save_image_raw(fn, x : np.ndarray):
-    try:
-        imageio.imwrite(fn, x)
-    except:
-        print("WARNING: FAILED to save image %s" % fn)
-
 
 def load_image_raw(fn) -> np.ndarray:
     return imageio.imread(fn)

@@ -17,8 +17,8 @@ class GlintBRDF:
     ):
         # constants
         self.EPSILON = 1e-7
-        self.targetNDF = 50000.0
-        self.maxNDF = 100000.0
+        self.targetNDF = 1.0
+        self.maxNDF = 1.0
         self._MicrofacetRoughness = _MicrofacetRoughness  
         self.pcg3dFloat = pcg3dFloat
         self.noise_4d = noise_4d
@@ -71,7 +71,6 @@ class GlintBRDF:
         # but rather RandXorshiftFloat(rngState01)
         outGaussian = sampleNormalDistribution(outUniform, 0.0, 1.0) 
 
-        # return uniform, gaussian, slopeLerp.to("cuda")
         return outUniform, outGaussian, slopeLerp
         
     def GenerateAngularBinomialValueForSurfaceCell(
@@ -96,19 +95,17 @@ class GlintBRDF:
                 0.0,
                 1.0,
             ),
-            torch.where(randB < footprintOneHitProba.unsqueeze(-1), 1.0, 0.0),
-        )  
-        
+            torch.where(randB < footprintOneHitProba.unsqueeze(-1), 0.0, 1.0),
+        ) 
+
         # Compute gauss
         gauss = torch.clamp(
             torch.floor(randG * footprintSTD.unsqueeze(-1) + footprintMean.unsqueeze(-1)), 
             min=torch.tensor(0.0).to('cuda'), 
             max=microfacetCount.unsqueeze(-1)
-        )  
+        ) 
  
-        res = BilinearLerp(gating * (1.0 + gauss), slopeLerp)
-
-        return res
+        return BilinearLerp(gating * (1.0 + gauss), slopeLerp)
     
     def computePcg3dFloat_in_batches(self, input_tensor, batch_size=16):
         output_list = []
@@ -118,8 +115,11 @@ class GlintBRDF:
             # Slice the input tensor to create a smaller batch
             batch = input_tensor[:, i:i + batch_size, :]
             # Process the batch using the model
-            # output_batch = self.pcg3dFloat(batch)
-            output_batch = checkpoint(self.pcg3dFloat, batch)
+            # Remember to change the input in SampleGlintGridSimplex!!!!
+            # Use the original np version
+            output_batch = pcg3dFloat_np(batch.cpu().numpy()).to('cuda')
+            # TODO: Use MLP version
+            # output_batch = checkpoint(self.pcg3dFloat, batch)
             # Store the output
             output_list.append(output_batch)
 
@@ -138,7 +138,6 @@ class GlintBRDF:
 
         skewedCoord = torch.einsum('ij,bkj->bki', gridToSkewedGrid, uv) # (4, n, 2)
         
-
         baseId = torch.floor(skewedCoord) # (4, n, 2)
         
         x = skewedCoord[..., 0]
@@ -155,11 +154,16 @@ class GlintBRDF:
         barycentrics = torch.stack(
             (-temp[..., 2] * s2, s - temp[..., 1] * s2, s - temp[..., 0] * s2), dim=-1
         )  # (4, n, 3)
-        
+        is_valid(barycentrics)
         # Get per surface cell per slope cell random numbers
-        rand0 = self.computePcg3dFloat_in_batches((torch.cat((glint0, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
-        rand1 = self.computePcg3dFloat_in_batches((torch.cat((glint1, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
-        rand2 = self.computePcg3dFloat_in_batches((torch.cat((glint2, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+        # TODO: Use this version if you are using MLP for pcg3dFloat
+        # rand0 = self.computePcg3dFloat_in_batches((torch.cat((glint0, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+        # rand1 = self.computePcg3dFloat_in_batches((torch.cat((glint1, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+        # rand2 = self.computePcg3dFloat_in_batches((torch.cat((glint2, gridSeed.unsqueeze(-1)), dim=-1) / 4294967296.0))
+        # Use this version if you are using the original implementation
+        rand0 = self.computePcg3dFloat_in_batches((torch.cat((glint0, gridSeed.unsqueeze(-1)), dim=-1)))
+        rand1 = self.computePcg3dFloat_in_batches((torch.cat((glint1, gridSeed.unsqueeze(-1)), dim=-1)))
+        rand2 = self.computePcg3dFloat_in_batches((torch.cat((glint2, gridSeed.unsqueeze(-1)), dim=-1)))
  
         rand0SlopesB, rand0SlopesG, slopeLerp0 = self.CustomRand4Texture(slope, rand0[..., 1:])
         rand1SlopesB, rand1SlopesG, slopeLerp1 = self.CustomRand4Texture(slope, rand1[..., 1:])
@@ -179,29 +183,26 @@ class GlintBRDF:
         microfacetCount = torch.clamp(
             footprintAreas.unsqueeze(-1) * torch.exp(logDensityRand), min=self.EPSILON
         )  # (4, n, 3)
-        microfacetCountBlended = torch.clamp(
-            microfacetCount * torch.unsqueeze(gridWeights.T, -1), min=self.EPSILON
-        )  # (4, n, 3)
+        microfacetCountBlended = microfacetCount * torch.unsqueeze(gridWeights.T, -1) # (4, n, 3)
 
         # Compute binomial properties
         # probability of hitting desired half vector in NDF distribution
-        hitProba = torch.clamp(
-            self._MicrofacetRoughness * targetNDF, self.EPSILON, 1.0
-        )  
+        hitProba = self._MicrofacetRoughness * targetNDF 
         # probability of hitting at least one microfacet in footprint
-        footprintOneHitProba = 1.0 - torch.pow((1.0 - hitProba).unsqueeze(-1), microfacetCountBlended)
+        footprintOneHitProba = torch.clamp(1.0 - torch.pow((1.0 - hitProba).unsqueeze(-1), microfacetCountBlended), min=0.0) # Although in the original code there is no clamp, but it should be like this if you look back
         # Expected value of number of hits in the footprint given already one hit
         footprintMean = (microfacetCountBlended - 1.0) * hitProba.unsqueeze(-1)  
         # Standard deviation of number of hits in the footprint given already one hit
         footprintSTD = torch.sqrt(
             torch.clamp(
                 footprintMean * (1.0 - hitProba.unsqueeze(-1)),
-                min=self.EPSILON,  # this can't be 0.0 otherwise it will produce invalid values during backpropagation
+                min=self.EPSILON,  # this can't be <= 0.0 otherwise it will produce invalid values during backpropagation
             )
         )  
+        
         binomialSmoothWidth = (
             0.1
-            * torch.clamp(footprintOneHitProba * 10, 0.0, 1.0)
+            * torch.clamp(footprintOneHitProba * 10.0, 0.0, 1.0)
             * torch.clamp((1.0 - footprintOneHitProba) * 10, 0.0, 1.0)
         )  # (4, n, 3)
 
@@ -209,10 +210,10 @@ class GlintBRDF:
         result0 = self.GenerateAngularBinomialValueForSurfaceCell(rand0SlopesB, rand0SlopesG, slopeLerp0, footprintOneHitProba[...,0], binomialSmoothWidth[...,0], footprintMean[...,0], footprintSTD[...,0], microfacetCountBlended[...,0])
         result1 = self.GenerateAngularBinomialValueForSurfaceCell(rand1SlopesB, rand1SlopesG, slopeLerp1, footprintOneHitProba[...,1], binomialSmoothWidth[...,1], footprintMean[...,1], footprintSTD[...,1], microfacetCountBlended[...,1])
         result2 = self.GenerateAngularBinomialValueForSurfaceCell(rand2SlopesB, rand2SlopesG, slopeLerp2, footprintOneHitProba[...,2], binomialSmoothWidth[...,2], footprintMean[...,2], footprintSTD[...,2], microfacetCountBlended[...,2])
-        
+
         # Interpolate result for glint grid cell
         results = torch.stack((result0, result1, result2), dim=2) / microfacetCount # (4, n, 3)
- 
+
         return torch.sum(results * barycentrics, dim=-1)
     
     def GetAnisoCorrectingGridTetrahedron(self, center_special_case, theta_bin_lerp, ratio_lerp, lod_lerp):
@@ -307,6 +308,75 @@ class GlintBRDF:
         # Stack results to get shape (4, n, 3)
         return torch.stack([p0, p1, p2, p3], dim=0)
     
+    @torch.no_grad()
+    def GetAnisoCorrectingGridTetrahedron_NonDiff(self, center_special_case, theta_bin_lerp, ratio_lerp, lod_lerp):
+        # Initialize output tensors
+        n = theta_bin_lerp.shape[0]
+        p0 = torch.zeros((n, 3))
+        p1 = torch.zeros((n, 3))
+        p2 = torch.zeros((n, 3))
+        p3 = torch.zeros((n, 3))
+
+        # Define the vertices
+        vecs_special_case = {
+            "a": torch.tensor([0, 1, 0]),
+            "b": torch.tensor([0, 0, 0]),
+            "c": torch.tensor([1, 1, 0]),
+            "d": torch.tensor([0, 1, 1]),
+            "e": torch.tensor([0, 0, 1]),
+            "f": torch.tensor([1, 1, 1])
+        }
+
+        vecs_normal_case = {
+            "a": torch.tensor([0, 1, 0]),
+            "b": torch.tensor([0, 0, 0]),
+            "c": torch.tensor([0.5, 1, 0]),
+            "d": torch.tensor([1, 0, 0]),
+            "e": torch.tensor([1, 1, 0]),
+            "f": torch.tensor([0, 1, 1]),
+            "g": torch.tensor([0, 0, 1]),
+            "h": torch.tensor([0.5, 1, 1]),
+            "i": torch.tensor([1, 0, 1]),
+            "j": torch.tensor([1, 1, 1])
+        }
+
+        for i in range(n):
+            if center_special_case[i]:  # Special Case (center of blending pattern)
+                if lod_lerp[i] > 1.0 - ratio_lerp[i]:  # Upper pyramid
+                    if RemapTo01(lod_lerp[i], 1.0 - ratio_lerp[i], 1.0) > theta_bin_lerp[i]:  # Left-up tetrahedron
+                        p0[i], p1[i], p2[i], p3[i] = vecs_special_case["a"], vecs_special_case["e"], vecs_special_case["d"], vecs_special_case["f"]
+                    else:  # Right-down tetrahedron
+                        p0[i], p1[i], p2[i], p3[i] = vecs_special_case["f"], vecs_special_case["e"], vecs_special_case["c"], vecs_special_case["a"]
+                else:  # Lower tetrahedron
+                    p0[i], p1[i], p2[i], p3[i] = vecs_special_case["b"], vecs_special_case["a"], vecs_special_case["c"], vecs_special_case["e"]
+            else:  # Normal case
+                if theta_bin_lerp[i] < 0.5 and theta_bin_lerp[i] * 2.0 < ratio_lerp[i]:  # Prism A
+                    if lod_lerp[i] > 1.0 - ratio_lerp[i]:  # Upper pyramid
+                        if RemapTo01(lod_lerp[i], 1.0 - ratio_lerp[i], 1.0) > RemapTo01(theta_bin_lerp[i] * 2.0, 0.0, ratio_lerp[i]):  # Left-up tetrahedron
+                            p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["a"], vecs_normal_case["f"], vecs_normal_case["h"], vecs_normal_case["g"]
+                        else:  # Right-down tetrahedron
+                            p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["c"], vecs_normal_case["a"], vecs_normal_case["h"], vecs_normal_case["g"]
+                    else:  # Lower tetrahedron
+                        p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["b"], vecs_normal_case["a"], vecs_normal_case["c"], vecs_normal_case["g"]
+                elif 1.0 - ((theta_bin_lerp[i] - 0.5) * 2.0) > ratio_lerp[i]:  # Prism B
+                    if lod_lerp[i] < 1.0 - ratio_lerp[i]:  # Lower pyramid
+                        if RemapTo01(lod_lerp[i], 0.0, 1.0 - ratio_lerp[i]) > RemapTo01(theta_bin_lerp[i], 0.5 - (1.0 - ratio_lerp[i]) * 0.5, 0.5 + (1.0 - ratio_lerp[i]) * 0.5):  # Left-up tetrahedron
+                            p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["b"], vecs_normal_case["g"], vecs_normal_case["i"], vecs_normal_case["c"]
+                        else:  # Right-down tetrahedron
+                            p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["d"], vecs_normal_case["b"], vecs_normal_case["c"], vecs_normal_case["i"]
+                    else:  # Upper tetrahedron
+                        p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["c"], vecs_normal_case["g"], vecs_normal_case["h"], vecs_normal_case["i"]
+                else:  # Prism C
+                    if lod_lerp[i] > 1.0 - ratio_lerp[i]:  # Upper pyramid
+                        if RemapTo01(lod_lerp[i], 1.0 - ratio_lerp[i], 1.0) > RemapTo01((theta_bin_lerp[i] - 0.5) * 2.0, 1.0 - ratio_lerp[i], 1.0):  # Left-up tetrahedron
+                            p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["c"], vecs_normal_case["j"], vecs_normal_case["h"], vecs_normal_case["i"]
+                        else:  # Right-down tetrahedron
+                            p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["e"], vecs_normal_case["i"], vecs_normal_case["c"], vecs_normal_case["j"]
+                    else:  # Lower tetrahedron
+                        p0[i], p1[i], p2[i], p3[i] = vecs_normal_case["d"], vecs_normal_case["e"], vecs_normal_case["c"], vecs_normal_case["i"]
+
+        return torch.stack([p0, p1, p2, p3], dim=0).to("cuda")
+    
     def calculate_grid_seeds(self, divLods, thetaBins, ratios):
         tmp = torch.stack([divLods, thetaBins, ratios], dim=-1)
 
@@ -314,21 +384,17 @@ class GlintBRDF:
         return torch.clamp(torch.trunc(HashWithoutSine13(tmp) * 4294967296.0), min=0.0, max=4294967295.0)
 
     def sample_glints(self, localHalfVector, uv, duvdx, duvdy):
-        ellipseMajor, ellipseMinor = GetGradientEllipse(duvdx, duvdy)
-        # ellipseRatio must be >= 1.0 otherwise it doesn't make sense
-        ellipseRatio = torch.clamp(
-            torch.norm(ellipseMajor, dim=-1) / torch.clamp(
-            torch.norm(ellipseMinor, dim=-1), min=self.EPSILON
-        ), min=1.0)
+        ellipseMajor, ellipseMinor = GetGradientEllipse(duvdx, duvdy) # shape (n, 2)
+        ellipseRatio = torch.norm(ellipseMajor, dim=-1) / (torch.norm(ellipseMinor, dim=-1) + self.EPSILON)
 
         # SHARED GLINT NDF VALUES
-        halfScreenSpaceScaler = self._ScreenSpaceScale * 0.5
+        halfScreenSpaceScaler = self._ScreenSpaceScale * 0.5 
         slope = localHalfVector[..., :2]  # Orthogrtaphic slope projected grid
-        rescaledTargetNDF = self.targetNDF / max(self.maxNDF, self.EPSILON)
+        rescaledTargetNDF = self.targetNDF / (self.maxNDF + self.EPSILON)
 
         # MANUAL LOD COMPENSATION
         lod = torch.log2(torch.norm(ellipseMinor, dim=-1) * halfScreenSpaceScaler)
-        lod0 = toIntApprox(lod)
+        lod0 = torch.floor(lod)
         lod1 = lod0 + 1.0
         divLod0 = torch.pow(2.0, lod0)
         divLod1 = torch.pow(2.0, lod1)
@@ -337,20 +403,17 @@ class GlintBRDF:
         footprintAreaLOD1 = torch.pow(torch.exp2(lod1), 2.0)
 
         # MANUAL ANISOTROPY RATIO COMPENSATION
-        ratio0 = torch.clamp(torch.pow(2.0, toIntApprox(torch.log2(ellipseRatio))), min=1.0)
+        ratio0 = torch.clamp(torch.pow(2.0, torch.floor(torch.log2(ellipseRatio))), min=1.0)
         ratio1 = ratio0 * 2.0
         ratioLerp = torch.clamp(Remap(ellipseRatio, ratio0, ratio1, 0.0, 1.0), min=0.0, max=1.0)
 
         # MANUAL ANISOTROPY ROTATION COMPENSATION
         v2 = torch.nn.functional.normalize(ellipseMajor, dim=-1)
         theta = torch.rad2deg(
-            torch.atan2(
-                -v2[..., 0],
-                v2[..., 1],
-            )
+            torch.atan2(-v2[..., 0], v2[..., 1])
         )
         thetaGrid = 90.0 / torch.clamp(ratio0, min=2.0)
-        thetaBin = toIntApprox(theta / thetaGrid) * thetaGrid
+        thetaBin = torch.trunc(theta / thetaGrid) * thetaGrid
         thetaBin += thetaGrid / 2.0
         thetaBin0 = torch.where(theta < thetaBin, thetaBin - thetaGrid / 2.0, thetaBin)
         thetaBinH = thetaBin0 + thetaGrid / 4.0
@@ -360,16 +423,19 @@ class GlintBRDF:
 
         # TETRAHEDRONIZATION OF ROTATION + RATIO + LOD GRID
         centerSpecialCase = ratio0 == 1.0 # Note that gradients will not flow through ratio0
-        divLods = torch.stack((divLod0, divLod1), dim=-1)
+        divLods = torch.stack((divLod0, divLod1), dim=-1) # shape (n, 2)
         footprintAreas = torch.stack((footprintAreaLOD0, footprintAreaLOD1), dim=-1)
         ratios = torch.stack((ratio0, ratio1), dim=-1)
         thetaBins = torch.stack(
             (thetaBin0, thetaBinH, thetaBin1, torch.zeros(thetaBin0.shape).to("cuda")),
             dim=-1,
-        )  # added 0.0 for center singularity case, shape (n, 4)
-        tetras = self.GetAnisoCorrectingGridTetrahedron(
-            centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp
-        )
+        ) # shape (n, 4)
+        # TODO: Differentiable version
+        # tetras = self.GetAnisoCorrectingGridTetrahedron(
+        #     centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp
+        # ) # shape (4, n, 3)
+        # # Non-differentiable version
+        tetras = self.GetAnisoCorrectingGridTetrahedron_NonDiff(centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp)
      
         # Account for center singularity in barycentric computation
         thetaBinLerp = torch.where(
@@ -382,60 +448,77 @@ class GlintBRDF:
         )  # Compute barycentric coordinates within chosen tetrahedron
 
         # PREPARE NEEDED ROTATIONS
-        tetras[..., 0] *= 2
+        tetras[..., 0] *= 2.0
         tetras[..., 0] = torch.where(
             centerSpecialCase,
             torch.where(tetras[..., 1] == 0.0, 3.0, tetras[..., 0]),
             tetras[..., 0],
-        )
+        ) # shape (4, n, 3)
+        
+        # Non-differentiable version
+        with torch.no_grad():
+            n = thetaBins.shape[0]  
+            
+            x_indices = tetras[..., 0].long() 
+            z_indices = tetras[..., 2].long()
+            y_indices = tetras[..., 1].long()
+            
+            thetaBins_selected = torch.stack([thetaBins[torch.arange(n), x_indices[i]] for i in range(4)], dim=0)
+            divLods_selected = torch.stack([divLods[torch.arange(n), z_indices[i]] for i in range(4)], dim=0)
+            ratios_selected = torch.stack([ratios[torch.arange(n), y_indices[i]] for i in range(4)], dim=0)
+            footprintAreas_selected = torch.stack([footprintAreas[torch.arange(n), z_indices[i]] for i in range(4)], dim=0)
         
         # Get the selected thetaBins
-        thetaBins_edges = torch.tensor([0, 1, 2, 3], device='cuda', dtype=torch.float32).view(1, 1, 4)
-        thetaBins_idx = torch.nn.functional.gumbel_softmax(
-                thetaBins_edges - tetras[...,0].unsqueeze(2),
-                tau=0.5,
-                hard=True
-            ) # (4, n, 4)
-        thetaBins_selected = torch.zeros(4, thetaBins.shape[0], device=thetaBins.device)
-        for i in range(4):
-            # Use for loop to optimise memory usage
-            # Multiply tensor1 with the corresponding slice of tensor2 and sum over the last dimension
-            thetaBins_selected[i] = torch.sum(thetaBins.unsqueeze(0) * thetaBins_idx[i], dim=-1)
-
-        # Get the selected divLods
-        binary_edges = torch.tensor([0, 1], device='cuda', dtype=torch.float32).view(1, 1, 2)
-        divLods_idx = torch.nn.functional.gumbel_softmax(
-                binary_edges - tetras[...,2].unsqueeze(2),
-                tau=0.5,
-                hard=True
-            ) # (4, n, 2)
-        divLods_selected = torch.einsum('ij,kij->ki', divLods, divLods_idx)
+        # TODO: Differentiable version ###############################################
+        # thetaBins_edges = torch.tensor([0, 1, 2, 3], device='cuda', dtype=torch.float32).view(1, 1, 4)
+        # thetaBins_idx = torch.nn.functional.gumbel_softmax(
+        #         thetaBins_edges - tetras[...,0].unsqueeze(2),
+        #         tau=0.5,
+        #         hard=True
+        #     ) # (4, n, 4)
         
-        # Get the selected ratios
-        ratios_dix = torch.nn.functional.gumbel_softmax(
-                binary_edges - tetras[...,1].unsqueeze(2),
-                tau=0.5,
-                hard=True
-            ) # (4, n, 2)
-        ratios_selected = torch.einsum('ij,kij->ki', ratios, ratios_dix)
+        # thetaBins_selected = torch.zeros(4, thetaBins.shape[0], device=thetaBins.device)
+        # for i in range(4):
+        #     # Use for loop to optimise memory usage
+        #     # Multiply tensor1 with the corresponding slice of tensor2 and sum over the last dimension
+        #     thetaBins_selected[i] = torch.sum(thetaBins.unsqueeze(0) * thetaBins_idx[i], dim=-1)
         
-        # Get the selected footprintAreas
-        footprintAreas_idx = torch.nn.functional.gumbel_softmax(
-            binary_edges - tetras[...,2].unsqueeze(2),
-            tau=0.5,
-            hard=True
-        )
-        footprintAreas_selected = torch.einsum('ij,kij->ki', footprintAreas, footprintAreas_idx)
+        # # Get the selected divLods
+        # binary_edges = torch.tensor([0, 1], device='cuda', dtype=torch.float32).view(1, 1, 2)
+        # divLods_idx = torch.nn.functional.gumbel_softmax(
+        #         binary_edges - tetras[...,2].unsqueeze(2),
+        #         tau=0.5,
+        #         hard=True
+        #     ) # (4, n, 2)
+        # divLods_selected = torch.einsum('ij,kij->ki', divLods, divLods_idx)
+        
+        # # Get the selected ratios
+        # ratios_dix = torch.nn.functional.gumbel_softmax(
+        #         binary_edges - tetras[...,1].unsqueeze(2),
+        #         tau=0.5,
+        #         hard=True
+        #     ) # (4, n, 2)
+        # ratios_selected = torch.einsum('ij,kij->ki', ratios, ratios_dix) 
+        
+        # # Get the selected footprintAreas
+        # footprintAreas_idx = torch.nn.functional.gumbel_softmax(
+        #     binary_edges - tetras[...,2].unsqueeze(2),
+        #     tau=0.5,
+        #     hard=True
+        # )
+        # footprintAreas_selected = torch.einsum('ij,kij->ki', footprintAreas, footprintAreas_idx)
+        ########################################################################################
         
         # selections based on tetra values
         uvRots = RotateUV(uv, torch.deg2rad(thetaBins_selected))
-        thetaBins_selected_mod = torch.remainder(thetaBins_selected, 360)
-        gridSeeds = self.calculate_grid_seeds(torch.log2(divLods_selected), thetaBins_selected_mod, ratios_selected)
+        ratios_selected_reshaped = ratios_selected.unsqueeze(-1)
+        denom = torch.cat((torch.ones(ratios_selected_reshaped.shape, device='cuda'), ratios_selected_reshaped), dim=-1)
+        final_uv = uvRots / divLods_selected.unsqueeze(-1) / denom # Be careful of the division by zero
+        assert is_valid(final_uv)
+        
+        gridSeeds = self.calculate_grid_seeds(torch.log2(divLods_selected), torch.remainder(thetaBins_selected, 360), ratios_selected)
 
         # SAMPLE GLINT GRIDS
-        ratios_selected_reshaped = ratios_selected.unsqueeze(-1)
-        denom = (torch.cat((torch.ones(ratios_selected_reshaped.shape, device='cuda'), ratios_selected_reshaped), dim=-1) + self.EPSILON)
-        final_uv = uvRots / (divLods_selected + self.EPSILON).unsqueeze(-1) / denom
         samples = self.SampleGlintGridSimplex(
             final_uv,
             gridSeeds,

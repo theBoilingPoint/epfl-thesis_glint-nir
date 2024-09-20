@@ -49,7 +49,7 @@ class EnvironmentLight(torch.nn.Module):
     def __init__(self, base):
         super(EnvironmentLight, self).__init__()
         self.mtx = None      
-        self.base = torch.nn.Parameter(base.clone().detach(), requires_grad=True)
+        self.base = torch.nn.Parameter(base.clone().detach(), requires_grad=True) # [6, n, n, 3]
         self.register_parameter('env_base', self.base)
 
     def xfm(self, mtx):
@@ -82,14 +82,15 @@ class EnvironmentLight(torch.nn.Module):
         white = (self.base[..., 0:1] + self.base[..., 1:2] + self.base[..., 2:3]) / 3.0
         return torch.mean(torch.abs(self.base - white))
 
-    def shade(self, gb_pos, gb_normal, kd, ks, view_pos, specular=True, train_glint=False):
+    def shade(self, gb_pos, gb_normal, albedo, orm, view_pos, specular=True, train_glint=False):
         wo = util.safe_normalize(view_pos - gb_pos)
-        occlusion = (1.0 - ks[..., 0:1])  # Modulate by hemisphere visibility
-        roughness = ks[..., 1:2]  # y component
-        metallic = ks[..., 2:3]  # z component
+        occlusion = (1.0 - orm[..., 0:1])  
+        roughness = orm[..., 1:2] 
+        metallic = orm[..., 2:3]  
         
-        diff_col = kd # assume this is in range [0, 1]
-        spec_col = 1.0 - kd
+        # Here kd is actually albedo
+        kD = albedo # assume this is in range [0, 1]
+        kS = 1.0 - albedo
         
         # The diffuse part of the split sum approximation
         reflvec = util.safe_normalize(util.reflect(wo, gb_normal))
@@ -99,41 +100,61 @@ class EnvironmentLight(torch.nn.Module):
             reflvec = ru.xfm_vectors(reflvec.view(reflvec.shape[0], reflvec.shape[1] * reflvec.shape[2], reflvec.shape[3]), mtx).view(*reflvec.shape)
             nrmvec  = ru.xfm_vectors(nrmvec.view(nrmvec.shape[0], nrmvec.shape[1] * nrmvec.shape[2], nrmvec.shape[3]), mtx).view(*nrmvec.shape)
 
-        # Diffuse lookup
-        diffuse = dr.texture(self.diffuse[None, ...], nrmvec.contiguous(), filter_mode='linear', boundary_mode='cube')
-        shaded_col = diffuse * diff_col
+        # Diffuse lookup (i.e. sample from diffuse irradiance map)
+        diffuse = dr.texture(self.diffuse[None, ...], nrmvec.contiguous(), filter_mode='linear', boundary_mode='cube') # (batct_size, n, n, 3)
 
         if specular:
             if not train_glint:
-                spec_col  = (1.0 - metallic)*0.04 + kd * metallic
-                diff_col  = kd * (1.0 - metallic)
-
+                kS  = (1.0 - metallic)*0.04 + albedo * metallic
+                kD  = albedo * (1.0 - metallic)
+                
             # Lookup FG term from lookup texture
             NdotV = torch.clamp(util.dot(wo, gb_normal), min=1e-4)
             fg_uv = torch.cat((NdotV, roughness), dim=-1)
             if not hasattr(self, '_FG_LUT'):
                 self._FG_LUT = torch.as_tensor(np.fromfile('data/irrmaps/bsdf_256_256.bin', dtype=np.float32).reshape(1, 256, 256, 2), dtype=torch.float32, device='cuda')
-            fg_lookup = dr.texture(self._FG_LUT, fg_uv, filter_mode='linear', boundary_mode='clamp')
+            brdf = dr.texture(self._FG_LUT, fg_uv, filter_mode='linear', boundary_mode='clamp')
 
             # Roughness adjusted specular env lookup
             miplevel = self.get_mip(roughness)
-            # spec should be Li with shape n,800,800,3
-            spec = dr.texture(self.specular[0][None, ...], reflvec.contiguous(), mip=list(m[None, ...] for m in self.specular[1:]), mip_level_bias=miplevel[..., 0], filter_mode='linear-mipmap-linear', boundary_mode='cube')
+            Li = dr.texture(self.specular[0][None, ...], reflvec.contiguous(), mip=list(m[None, ...] for m in self.specular[1:]), mip_level_bias=miplevel[..., 0], filter_mode='linear-mipmap-linear', boundary_mode='cube')
             # Compute aggregate lighting
-            reflectance = spec_col * fg_lookup[...,0:1] + fg_lookup[...,1:2]
+            # Split sum approximation. fg_lookup -> bdrf.x, brdf.y
+            reflectance = kS * brdf[...,0:1] + brdf[...,1:2]
             
             if train_glint:
+                # recalculate spec_col for training glints
                 print('training glints')
+                
+                n = torch.nn.functional.normalize(gb_normal, dim=-1)
+                wo_normalised = torch.nn.functional.normalize(wo, dim=-1)
+                wi = torch.nn.functional.normalize(util.reflect_glsl(-wo_normalised, n), dim=-1)
+   
+                # Remember to keep the clamp, important
+                wiDotN = torch.clamp(util.dot(wi, n), min=1e-4)
+                woDotN = torch.clamp(util.dot(wo_normalised, n), min=1e-4)
+                
+                # Calculate geometry term
                 k = (roughness + 1) * (roughness + 1) / 8
-                wiDotN = torch.clamp(util.dot(reflvec, gb_normal), min=1e-4)
-                G1 = NdotV / (NdotV * (1 - k) + k)
+                G1 = woDotN / (woDotN * (1 - k) + k)
                 G2 = wiDotN / (wiDotN * (1 - k) + k)
                 G = G1 * G2
-                reflectance = ks * metallic * G / (4 * NdotV * wiDotN)
+                
+                # Calculate microfacet distribution term
+                D = torch.clamp(metallic, min=0.0)
+                
+                # Calculate fresnel term
+                R = kS # (a,b,b,3)
+                cosTheta = torch.clamp(woDotN, min=0.0) # (a,b,b,1)
+                F = R + (
+                        torch.clamp(1.0 - roughness, min=R).expand(-1, -1, -1, 3) - R) * torch.pow(torch.clamp(1.0 - cosTheta, 0.0, 1.0), 5.0
+                    )
+                
+                reflectance = F * D * G / (4 * woDotN * wiDotN)
             
-            shaded_col += spec * reflectance
+            shaded_col = diffuse * kD +  Li * reflectance
 
-        return shaded_col * occlusion
+        return shaded_col * occlusion 
 
 ######################################################################################
 # Load and store
@@ -141,9 +162,9 @@ class EnvironmentLight(torch.nn.Module):
 
 # Load from latlong .HDR file
 def _load_env_hdr(fn, scale=1.0):
-    latlong_img = torch.tensor(util.load_image(fn), dtype=torch.float32, device='cuda')*scale
-    cubemap = util.latlong_to_cubemap(latlong_img, [512, 512])
-
+    latlong_img = torch.tensor(util.load_image(fn), dtype=torch.float32, device='cuda') * scale # [h, w, 3] (h is the height and w is the width of the original envmap)
+    cubemap = util.latlong_to_cubemap(latlong_img, [512, 512]) # [6, n, n, 3]
+    
     l = EnvironmentLight(cubemap)
     l.build_mips()
 
@@ -159,7 +180,7 @@ def save_env_map(fn, light):
     assert isinstance(light, EnvironmentLight), "Can only save EnvironmentLight currently"
     if isinstance(light, EnvironmentLight):
         color = util.cubemap_to_latlong(light.base, [512, 1024])
-    util.save_image_raw(fn, color.detach().cpu().numpy())
+    util.save_image(fn, color.detach().cpu().numpy())
 
 ######################################################################################
 # Create trainable env map with random initialization

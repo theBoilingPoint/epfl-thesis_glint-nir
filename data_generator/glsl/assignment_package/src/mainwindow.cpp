@@ -29,6 +29,12 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(ui->screenSpaceScaleSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setScreenSpaceScale(double)));
     connect(ui->logMicrofacetDensitySpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setLogMicrofacetDensity(double)));
     connect(ui->densityRandomizationSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setDensityRandomization(double)));
+
+    connect(ui->rotationXSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setRotationX(double)));
+    connect(ui->rotationYSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setRotationY(double)));
+    connect(ui->rotationZSpinBox, SIGNAL(valueChanged(double)), ui->mygl, SLOT(slot_setRotationZ(double)));
+
+    connect(ui->backgroundColourComboBox, SIGNAL(currentIndexChanged(int)), ui->mygl, SLOT(slot_changeBackgroundColour(int)));
 }
 
 MainWindow::~MainWindow()

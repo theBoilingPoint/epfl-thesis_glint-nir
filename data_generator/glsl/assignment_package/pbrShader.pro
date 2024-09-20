@@ -1,4 +1,5 @@
-QT += core widgets openglwidgets
+#QT += core widgets openglwidgets # Use this line on Windows
+QT += core widgets opengl # Use this line on Linux
 
 TARGET = PBRShading
 TEMPLATE = app

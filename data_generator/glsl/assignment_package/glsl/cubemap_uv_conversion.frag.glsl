@@ -4,7 +4,7 @@ in vec3 fs_Pos;
 out vec4 out_Col;
 uniform sampler2D u_EquirectangularMap;
 
-//                              1/(2PI), 1/PI
+// 1/(2PI), 1/PI
 const vec2 normalize_uv = vec2(0.1591, 0.3183);
 
 vec2 sampleSphericalMap(vec3 v) {

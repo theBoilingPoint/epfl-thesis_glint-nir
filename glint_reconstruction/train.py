@@ -287,7 +287,6 @@ def validate_itr(glctx, target, geometry, opt_material, lgt, FLAGS):
         result_image = torch.cat([result_dict["opt"], result_dict["ref"]], axis=1)
 
         if FLAGS.display is not None:
-            white_bg = torch.ones_like(target["background"])
             for layer in FLAGS.display:
                 if "latlong" in layer and layer["latlong"]:
                     if isinstance(lgt, light.EnvironmentLight):
@@ -950,13 +949,7 @@ if __name__ == "__main__":
     #  Pass 3: Train specular params with fixed geometry, lighting, and albedo texture.
     # ==============================================================================================
     print("Glint pass started.")
-    # mat["glint_params"] = get_stats_of_obj(FLAGS.ref_mesh)
     mat["glint_params"] = torch.rand(3, device=FLAGS.device, requires_grad=True)
-    # mat["glint_4d_noise"] = torch.tensor(
-    #     imageio.v3.imread("./render/renderutils/glint_brdf/noise_maps/rand_4d_800.exr"),
-    #     dtype=torch.float32,
-    #     device=FLAGS.device,
-    # )
     mat["glint_4d_noise"] = torch.rand(800, 800, 4, device=FLAGS.device, requires_grad=True)
     pcg3d = PCG3dFloat(3,3).to(FLAGS.device)
     pcg3d.load_state_dict(torch.load("./render/renderutils/glint_brdf/weights/model_state_dict.pth"))

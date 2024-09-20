@@ -3,7 +3,8 @@
 #include <QStringBuilder>
 #include <iostream>
 #include <exception>
-
+#include <QTextStream>
+#include <QDebug>
 
 ShaderProgram::ShaderProgram(OpenGLContext *context)
     : vertShader(), fragShader(), prog(),

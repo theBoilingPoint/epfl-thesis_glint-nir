@@ -73,8 +73,7 @@ void CubeMapFrameBuffer::create(bool mipmap) {
     mp_context->glGenTextures(1, &m_outputCubeMap);
     mp_context->glBindTexture(GL_TEXTURE_CUBE_MAP, m_outputCubeMap);
     for (unsigned int i = 0; i < 6; ++i) {
-        //              Color format is 16 bits per channel! VVVVV
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F,
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB32F,
                      m_width, m_height, 0, GL_RGB, GL_FLOAT, nullptr);
     }
     mp_context->glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

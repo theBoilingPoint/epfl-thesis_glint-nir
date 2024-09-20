@@ -51,6 +51,12 @@ const float RAD2DEG = 57.2957795131;
 //=======================================================================================
 // Set the input material attributes to texture-sampled values
 // if the indicated booleans are TRUE
+vec3 transformToWorldToTangent(vec3 v) {
+    mat3 TBN = mat3(fs_Tan, fs_Bit, fs_Nor);
+    mat3 TBNInv = transpose(TBN);
+    return TBNInv * v;
+}
+
 void handleMaterialMaps(inout vec3 albedo, inout float metallic,
                         inout float roughness, inout float ambientOcclusion,
                         inout vec3 normal) {
@@ -67,7 +73,6 @@ void handleMaterialMaps(inout vec3 albedo, inout float metallic,
         ambientOcclusion = texture(u_AOMap, fs_UV).r;
     }
     if(u_UseNormalMap) {
-        // TODO: Apply normal mapping
         normal = 2.f * texture(u_NormalMap, fs_UV).rgb - 1.f;
         mat3 TBN = mat3(fs_Tan, fs_Bit, fs_Nor);
         normal = normalize(TBN * normal);
@@ -142,6 +147,7 @@ float HashWithoutSine13(vec3 p3)
 {
 	p3 = fract(p3 * .1031);
 	p3 += dot(p3, p3.yzx + 33.33);
+
 	return fract((p3.x + p3.y) * p3.z);
 }
 
@@ -165,24 +171,25 @@ void GetGradientEllipse(vec2 duvdx, vec2 duvdy, out vec2 ellipseMajor, out vec2 
     vec2 A1 = vec2(L2 - d, c);
     float r0 = 1.0 / sqrt(L1);
     float r1 = 1.0 / sqrt(L2);
+
     ellipseMajor = normalize(A0) * r0;
     ellipseMinor = normalize(A1) * r1;
 }
 
-vec2 RotateUV(vec2 uv, float rotation, vec2 mid)
+vec2 RotateUV(vec2 uv, float rotation)
 {
-	return vec2(
-		cos(rotation) * (uv.x - mid.x) + sin(rotation) * (uv.y - mid.y) + mid.x,
-		cos(rotation) * (uv.y - mid.y) - sin(rotation) * (uv.x - mid.x) + mid.y
+    return vec2(
+		cos(rotation) * uv.x + sin(rotation) * uv.y,
+		cos(rotation) * uv.y - sin(rotation) * uv.x
 		);
 }
 
 float BilinearLerp(vec4 values, vec2 valuesLerp)
 {
-	// Values XY = float4(00, 01, 10, 11)
 	float resultX = mix(values.x, values.z, valuesLerp.x);
 	float resultY = mix(values.y, values.w, valuesLerp.x);
 	float result = mix(resultX, resultY, valuesLerp.y);
+
 	return result;
 }
 
@@ -223,9 +230,9 @@ vec4 GetBarycentricWeightsTetrahedron(vec3 p, vec3 v1, vec3 v2, vec3 v3, vec3 v4
     return uvwk;
 }
 
-void UnpackFloatParallel4(vec4 input, out vec4 a, out vec4 b)
+void UnpackFloatParallel4(vec4 packedInput, out vec4 a, out vec4 b)
 {
-    uvec4 uintInput = floatBitsToUint(input);
+    uvec4 uintInput = floatBitsToUint(packedInput);
 
     // unpackHalf2x16 returns a two-component floating-point vector with components obtained by 
     // unpacking a 32-bit unsigned integer into a pair of 16-bit values, interpreting those values 
@@ -288,7 +295,7 @@ float SampleGlintGridSimplex(float roughness, vec2 uv, uint gridSeed, vec2 slope
     vec3 barycentrics = vec3(-temp.z * s2, s - temp.y * s2, s - temp.x * s2);
 
     // Generate per surface cell random numbers
-    vec3 rand0 = pcg3dFloat(uvec3(glint0 + ivec2(2147483648), gridSeed)); // TODO : optimize away manual seeds
+    vec3 rand0 = pcg3dFloat(uvec3(glint0 + ivec2(2147483648), gridSeed)); 
     vec3 rand1 = pcg3dFloat(uvec3(glint1 + ivec2(2147483648), gridSeed));
     vec3 rand2 = pcg3dFloat(uvec3(glint2 + ivec2(2147483648), gridSeed));
 
@@ -308,7 +315,7 @@ float SampleGlintGridSimplex(float roughness, vec2 uv, uint gridSeed, vec2 slope
     float hitProba = roughness * targetNDF; // probability of hitting desired half vector in NDF distribution
     vec3 footprintOneHitProba = (1.0 - pow(vec3(1.0 - hitProba), microfacetCountBlended)); // probability of hitting at least one microfacet in footprint
     vec3 footprintMean = (microfacetCountBlended - 1.0) * hitProba; // Expected value of number of hits in the footprint given already one hit
-    vec3 footprintSTD = sqrt((microfacetCountBlended - 1.0) * hitProba * (1.0 - hitProba)); // Standard deviation of number of hits in the footprint given already one hit
+    vec3 footprintSTD = sqrt(footprintMean * (1.0 - hitProba)); // Standard deviation of number of hits in the footprint given already one hit
     vec3 binomialSmoothWidth = 0.1 * clamp(footprintOneHitProba * 10.0, 0.0, 1.0) * clamp((1.0 - footprintOneHitProba) * 10.0, 0.0, 1.0);
 
     // Generate numbers of reflecting microfacets
@@ -320,6 +327,7 @@ float SampleGlintGridSimplex(float roughness, vec2 uv, uint gridSeed, vec2 slope
     // Interpolate result for glint grid cell
     vec3 results = vec3(result0, result1, result2) / microfacetCount;
     float result = dot(results, barycentrics);
+
     return result;
 }
 
@@ -427,7 +435,6 @@ vec4 sampleGlints(float roughness, vec3 localHalfVector, float targetNDF, float 
 
     // SHARED GLINT NDF VALUES
     float halfScreenSpaceScaler = _ScreenSpaceScale * 0.5;
-    float footprintArea = length(ellipseMajor) * halfScreenSpaceScaler * length(ellipseMinor) * halfScreenSpaceScaler * 4.0;
     vec2 slope = localHalfVector.xy; // Orthogrtaphic slope projected grid
     float rescaledTargetNDF = targetNDF / maxNDF;
 
@@ -447,9 +454,8 @@ vec4 sampleGlints(float roughness, vec3 localHalfVector, float targetNDF, float 
     float ratioLerp = clamp(Remap(ellipseRatio, ratio0, ratio1, 0.0, 1.0), 0.0, 1.0);
 
     // MANUAL ANISOTROPY ROTATION COMPENSATION
-    vec2 v1 = vec2(0.0, 1.0);
     vec2 v2 = normalize(ellipseMajor);
-    float theta = atan(v2.y, v2.x) * RAD2DEG;
+    float theta = atan(-v2.x, v2.y) * RAD2DEG;
     float thetaGrid = 90.0 / max(ratio0, 2.0);
     float thetaBin = floor(theta / thetaGrid) * thetaGrid;
     thetaBin = thetaBin + (thetaGrid / 2.0);
@@ -480,10 +486,10 @@ vec4 sampleGlints(float roughness, vec3 localHalfVector, float targetNDF, float 
         tetraC.x = (tetraC.y == 0.0) ? 3.0 : tetraC.x;
         tetraD.x = (tetraD.y == 0.0) ? 3.0 : tetraD.x;
     }
-    vec2 uvRotA = RotateUV(uv, thetaBins[int(tetraA.x)] * DEG2RAD, vec2(0.0));
-    vec2 uvRotB = RotateUV(uv, thetaBins[int(tetraB.x)] * DEG2RAD, vec2(0.0));
-    vec2 uvRotC = RotateUV(uv, thetaBins[int(tetraC.x)] * DEG2RAD, vec2(0.0));
-    vec2 uvRotD = RotateUV(uv, thetaBins[int(tetraD.x)] * DEG2RAD, vec2(0.0));
+    vec2 uvRotA = RotateUV(uv, thetaBins[int(tetraA.x)] * DEG2RAD);
+    vec2 uvRotB = RotateUV(uv, thetaBins[int(tetraB.x)] * DEG2RAD);
+    vec2 uvRotC = RotateUV(uv, thetaBins[int(tetraC.x)] * DEG2RAD);
+    vec2 uvRotD = RotateUV(uv, thetaBins[int(tetraD.x)] * DEG2RAD);
 
     // SAMPLE GLINT GRIDS
     uint gridSeedA = uint(HashWithoutSine13(vec3(log2(divLods[int(tetraA.z)]), mod(thetaBins[int(tetraA.x)], 360.0), ratios[int(tetraA.y)])) * 4294967296.0);
@@ -494,13 +500,8 @@ vec4 sampleGlints(float roughness, vec3 localHalfVector, float targetNDF, float 
     float sampleB = SampleGlintGridSimplex(roughness, uvRotB / divLods[int(tetraB.z)] / vec2(1.0, ratios[int(tetraB.y)]), gridSeedB, slope, ratios[int(tetraB.y)] * footprintAreas[int(tetraB.z)], rescaledTargetNDF, tetraBarycentricWeights.y);
     float sampleC = SampleGlintGridSimplex(roughness, uvRotC / divLods[int(tetraC.z)] / vec2(1.0, ratios[int(tetraC.y)]), gridSeedC, slope, ratios[int(tetraC.y)] * footprintAreas[int(tetraC.z)], rescaledTargetNDF, tetraBarycentricWeights.z);
     float sampleD = SampleGlintGridSimplex(roughness, uvRotD / divLods[int(tetraD.z)] / vec2(1.0, ratios[int(tetraD.y)]), gridSeedD, slope, ratios[int(tetraD.y)] * footprintAreas[int(tetraD.z)], rescaledTargetNDF, tetraBarycentricWeights.w);
+    
     return vec4((sampleA + sampleB + sampleC + sampleD) * (1.0 / roughness) * maxNDF);
-}
-
-vec3 transformToWorldToTangent(vec3 v) {
-    mat3 TBN = mat3(fs_Tan, fs_Bit, normalize(cross(fs_Tan, fs_Bit)));
-    mat3 TBNInv = transpose(TBN);
-    return TBNInv * v;
 }
 
 void main()
@@ -517,14 +518,13 @@ void main()
     // Calculate the lighting
     vec3 wo = normalize(u_CamPos - fs_Pos);
     // Reflecting wo about N
-    vec3 wi = reflect(-wo, N);
-    vec3 wh_tangent = normalize(transformToWorldToTangent(wo) + transformToWorldToTangent(wi));
+    vec3 wi = reflect(-wo, N); // calculated as I - 2.0 * dot(N, I) * N, where I is the first argument
+    vec3 wh_tangent = normalize(transformToWorldToTangent(wo) + transformToWorldToTangent(normalize(wi)));
 
     /**
         The diffuse part.
     */
     vec3 R = mix(vec3(0.04), albedo, metallic);
-    // TODO: But N should be wh? How to get wh? Isotropic lobe assumption?
     vec3 kS = fresnelSchlickRoughness(max(dot(N, wo), 0.0), R, roughness); 
     vec3 kD = 1.0 - kS;
     // The texture sampling correspond to PI * (the whole thing in the diffuse integral, including its cosine term) / num samples
@@ -541,7 +541,19 @@ void main()
 
     vec3 specular;
     if (u_UseGlint) {
-        specular = Li * sampleGlints(roughness, wh_tangent, 0.5, 1.0, fs_UV, dFdx(fs_UV), dFdy(fs_UV)).rgb;
+        // Fresnel term
+        vec3 F = kS;
+        // NDF term
+        float D = sampleGlints(roughness, wh_tangent, 0.5, 1.0, fs_UV, dFdx(fs_UV), dFdy(fs_UV)).r;
+        // Geometric term
+        float k = (roughness + 1) * (roughness + 1) / 8;
+        float wiDotN = dot(normalize(wi), N);
+        float NdotV = max(dot(N, wo), 0.0);
+        float G1 = NdotV / (NdotV * (1 - k) + k);
+        float G2 = wiDotN / (wiDotN * (1 - k) + k);
+        float G = G1 * G2;
+
+        specular = Li * F * D * G / (4 * NdotV * wiDotN);
     }
     else {
         // The BRDF part of the split sum approximation.
