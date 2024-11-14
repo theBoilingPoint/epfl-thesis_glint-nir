@@ -126,13 +126,12 @@ class EnvironmentLight(torch.nn.Module):
                 # recalculate spec_col for training glints
                 print('training glints')
                 
-                n = torch.nn.functional.normalize(gb_normal, dim=-1)
-                wo_normalised = torch.nn.functional.normalize(wo, dim=-1)
-                wi = torch.nn.functional.normalize(util.reflect_glsl(-wo_normalised, n), dim=-1)
+                n = util.safe_normalize(gb_normal)
+                wi = util.safe_normalize(util.reflect_glsl(-wo, n))
    
                 # Remember to keep the clamp, important
                 wiDotN = torch.clamp(util.dot(wi, n), min=1e-4)
-                woDotN = torch.clamp(util.dot(wo_normalised, n), min=1e-4)
+                woDotN = torch.clamp(util.dot(wo, n), min=1e-4)
                 
                 # Calculate geometry term
                 k = (roughness + 1) * (roughness + 1) / 8
@@ -149,12 +148,14 @@ class EnvironmentLight(torch.nn.Module):
                 F = R + (
                         torch.clamp(1.0 - roughness, min=R).expand(-1, -1, -1, 3) - R) * torch.pow(torch.clamp(1.0 - cosTheta, 0.0, 1.0), 5.0
                     )
+                kD = 1 - F # Here F is kS
                 
                 reflectance = F * D * G / (4 * woDotN * wiDotN)
             
-            shaded_col = diffuse * kD +  Li * reflectance
+        #     shaded_col = diffuse * kD +  Li * reflectance
 
-        return shaded_col * occlusion 
+        # return shaded_col * occlusion 
+        return diffuse
 
 ######################################################################################
 # Load and store

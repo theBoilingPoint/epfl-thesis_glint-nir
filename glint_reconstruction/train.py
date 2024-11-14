@@ -950,7 +950,7 @@ if __name__ == "__main__":
     # ==============================================================================================
     print("Glint pass started.")
     mat["glint_params"] = torch.rand(3, device=FLAGS.device, requires_grad=True)
-    mat["glint_4d_noise"] = torch.rand(800, 800, 4, device=FLAGS.device, requires_grad=True)
+    mat["glint_4d_noise"] = torch.rand(800, 800, 4, device=FLAGS.device, requires_grad=True) 
     pcg3d = PCG3dFloat(3,3).to(FLAGS.device)
     pcg3d.load_state_dict(torch.load("./render/renderutils/glint_brdf/weights/model_state_dict.pth"))
     for param in pcg3d.parameters():

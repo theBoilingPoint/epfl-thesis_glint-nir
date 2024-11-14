@@ -105,18 +105,18 @@ def shade(
             # Get params for glint brdf
             #
             # Calculate TBN matrix
-            gb_normal_normalised = torch.nn.functional.normalize(gb_normal, dim=-1)
-            gb_tangent_normalised = torch.nn.functional.normalize(gb_tangent, dim=-1)
-            gb_bitangent_normalised = torch.nn.functional.normalize(torch.cross(gb_normal_normalised, gb_tangent_normalised), dim=-1)  # we should time the handedness  => https://docs.marmoset.co/docs/tangent-handedness/
+            gb_normal_normalised = util.safe_normalize(gb_normal)
+            gb_tangent_normalised = util.safe_normalize(gb_tangent)
+            gb_bitangent_normalised = util.safe_normalize(torch.cross(gb_normal_normalised, gb_tangent_normalised)) # we should time the handedness  => https://docs.marmoset.co/docs/tangent-handedness/
             gb_TBN_inv = torch.stack((gb_tangent_normalised, gb_bitangent_normalised, gb_normal_normalised), dim=3) # Equivalent to TBN transposed
             
             # calculated based on Unity's implementation
-            wo = torch.nn.functional.normalize(view_pos - gb_pos, dim=-1)  
-            wi = torch.nn.functional.normalize(util.reflect_glsl(-wo, gb_normal_normalised), dim=-1) 
+            wo = util.safe_normalize(view_pos - gb_pos)
+            wi = util.safe_normalize(util.reflect_glsl(-wo, gb_normal_normalised))
             
             wo_ts = torch.matmul(gb_TBN_inv, wo.unsqueeze(-1)).squeeze(-1)
             wi_ts = torch.matmul(gb_TBN_inv, wi.unsqueeze(-1)).squeeze(-1)
-            wh_ts = torch.nn.functional.normalize(wi_ts + wo_ts, dim=-1)
+            wh_ts = util.safe_normalize(wi_ts + wo_ts)
             
             duvdx = gb_texc_deriv[..., 0:2]
             duvdy = gb_texc_deriv[..., 2:4]

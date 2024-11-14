@@ -33,6 +33,9 @@ class MyGL
 private:
     glm::mat4 modelMatrix_default;
     glm::mat4 modelMatrix;
+    float rotationX;
+    float rotationY;
+    float rotationZ;
 
     SquarePlane m_geomSquare;
     Mesh m_geomMesh;
@@ -104,6 +107,8 @@ protected:
     void renderGlintNoiseToTexture(unsigned int size, unsigned int seed);
 
     void setupShaderHandles();
+
+    void rotateModel();
 
 public slots:
     void slot_setRed(int);

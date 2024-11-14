@@ -530,7 +530,8 @@ void main()
     // The texture sampling correspond to PI * (the whole thing in the diffuse integral, including its cosine term) / num samples
     // Therefore we need to time it by kD and albedo to get the diffuse Lo
     // Also given that the hemisphere is oriented along N, we pass N as the fs_Pos for the convolution
-    vec3 diffuse    = texture(u_DiffuseIrradianceMap, N).rgb * albedo;
+    // vec3 diffuse    = texture(u_DiffuseIrradianceMap, N).rgb * albedo;
+    vec3 diffuse    = texture(u_DiffuseIrradianceMap, N).rgb;
 
     /**
         The specular part.
@@ -576,5 +577,6 @@ void main()
     // Gamma correction: c' = c^(1/gamma)
     col = pow(col, vec3(1.0 / 2.2));
 
-    out_Col = vec4(col, 1.f);
+    // out_Col = vec4(col, 1.f);
+    out_Col = vec4(diffuse, 1.f);
 }

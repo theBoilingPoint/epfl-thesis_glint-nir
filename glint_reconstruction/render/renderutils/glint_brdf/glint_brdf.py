@@ -17,7 +17,7 @@ class GlintBRDF:
     ):
         # constants
         self.EPSILON = 1e-7
-        self.targetNDF = 1.0
+        self.targetNDF = 0.5
         self.maxNDF = 1.0
         self._MicrofacetRoughness = _MicrofacetRoughness  
         self.pcg3dFloat = pcg3dFloat
@@ -434,7 +434,7 @@ class GlintBRDF:
         # tetras = self.GetAnisoCorrectingGridTetrahedron(
         #     centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp
         # ) # shape (4, n, 3)
-        # # Non-differentiable version
+        # Non-differentiable version
         tetras = self.GetAnisoCorrectingGridTetrahedron_NonDiff(centerSpecialCase, thetaBinLerp, ratioLerp, lodLerp)
      
         # Account for center singularity in barycentric computation

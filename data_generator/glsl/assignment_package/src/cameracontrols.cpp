@@ -25,9 +25,9 @@ void MyGL::mouseMoveEvent(QMouseEvent *e)
     }
     else if(e->buttons() & Qt::RightButton)
     {
-        // glm::vec2 diff = 0.02f * (pos - m_mousePosPrev);
-        // m_mousePosPrev = pos;
-        // m_glCamera.Zoom(diff.y);
+        glm::vec2 diff = 0.02f * (pos - m_mousePosPrev);
+        m_mousePosPrev = pos;
+        m_glCamera.Zoom(diff.y);
     }
     else if(e->buttons() & Qt::MiddleButton) {
         // Panning

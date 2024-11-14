@@ -17,6 +17,9 @@ MyGL::MyGL(QWidget *parent)
     :   OpenGLContext(parent),
         modelMatrix_default(glm::mat4(1.f)),
         modelMatrix(glm::mat4(1.f)),
+        rotationX(0.f), 
+        rotationY(0.f), 
+        rotationZ(0.f),
         m_geomSquare(this),
         m_geomMesh(this), m_textureAlbedo(this), m_textureMetallic(this),
         m_textureNormals(this), m_textureRoughness(this), m_textureAO(this),
@@ -444,6 +447,12 @@ void MyGL::initPBRunifs() {
     m_progPBR.setUnifFloat("_DensityRandomization", 10.f);
 }
 
+void MyGL::rotateModel() {
+    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationX, glm::vec3(1, 0, 0)) * modelMatrix_default;
+    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationY, glm::vec3(0, 1, 0)) * modelMatrix;
+    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationZ, glm::vec3(0, 0, 1)) * modelMatrix;
+}
+
 void MyGL::slot_setRed(int r) {
     m_albedo.r = r / 100.f;
     m_progPBR.setUnifVec3("u_Albedo", m_albedo);
@@ -693,20 +702,20 @@ void MyGL::slot_setDensityRandomization(double d) {
 }
 
 void MyGL::slot_setRotationX(double d) {
-    float rotationX = glm::radians(static_cast<float>(d));
-    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationX, glm::vec3(1, 0, 0)) * modelMatrix_default;
+    rotationX = glm::radians(static_cast<float>(d));
+    rotateModel();
     update();
 }
 
 void MyGL::slot_setRotationY(double d) {
-    float rotationY = glm::radians(static_cast<float>(d));
-    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationY, glm::vec3(0, 1, 0)) * modelMatrix_default;
+    rotationY = glm::radians(static_cast<float>(d));
+    rotateModel();
     update();
 }
 
 void MyGL::slot_setRotationZ(double d) {
-    float rotationZ = glm::radians(static_cast<float>(d));
-    modelMatrix = glm::rotate(glm::mat4(1.0f), rotationZ, glm::vec3(0, 0, 1)) * modelMatrix_default;
+    rotationZ = glm::radians(static_cast<float>(d));
+    rotateModel();
     update();
 }
 
